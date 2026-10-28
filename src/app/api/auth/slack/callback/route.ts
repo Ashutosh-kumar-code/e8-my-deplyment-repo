@@ -1,0 +1,67 @@
+export const dynamic = 'force-dynamic';
+import { NextResponse } from "next/server";
+import jwt from "jsonwebtoken";
+import { getDbHttp } from "@/lib/db";
+import { user as userTable } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+
+export async function GET(req: Request) {
+  const db = getDbHttp();
+  const url = new URL(req.url);
+  const code = url.searchParams.get("code");
+
+  if (!code) return NextResponse.json({ error: "Missing code" }, { status: 400 });
+
+  const response = await fetch("https://slack.com/api/oauth.v2.access", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: process.env.SLACK_CLIENT_ID!,
+      client_secret: process.env.SLACK_CLIENT_SECRET!,
+      code,
+      // redirect_uri: `${process.env.GOOGLE_REDIRECT_URI}/api/auth/slack/callback`,
+      redirect_uri: `https://b7c57502fdd0.ngrok-free.app/api/auth/slack/callback`,
+    }),
+  });
+
+  const data = await response.json();
+  if (!data.ok) {
+    return NextResponse.json({ error: "Slack auth failed" }, { status: 400 });
+  }
+
+  const email = data.authed_user.email || data.user?.email;
+  if (!email) {
+    return NextResponse.json({ error: "Slack user email not available" }, { status: 400 });
+  }
+
+  let [user] = await db.select().from(userTable).where(eq(userTable.email, email)).limit(1);
+  if (!user) {
+    [user] = await db.insert(userTable).values({
+      email,
+      name: data.authed_user.name || "Slack User",
+      role: "client",
+      updatedAt: new Date().toISOString(),
+    }).returning();
+  }
+
+  if (user.employeeStatus !== 'ACTIVE' && user.email !== 'sahilsagvekar230@gmail.com') {
+    return NextResponse.redirect(`${process.env.GOOGLE_REDIRECT_URI}/login?error=account_deactivated`);
+  }
+
+  const token = jwt.sign(
+    { userId: user.id, email: user.email, role: user.role },
+    process.env.JWT_SECRET!,
+    { expiresIn: "7d" }
+  );
+
+  const redirect = NextResponse.redirect(`${process.env.GOOGLE_REDIRECT_URI}/dashboard`);
+  redirect.cookies.set("authToken", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60,
+    path: "/",
+  });
+
+  return redirect;
+}

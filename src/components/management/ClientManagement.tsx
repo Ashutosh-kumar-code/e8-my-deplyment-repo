@@ -1,0 +1,4848 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { PreClientsTab } from "../admin/PreClientsTab";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Textarea } from "../ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
+import { FilterSelect } from "../ui/filter-select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import {
+  Plus,
+  Search,
+  Filter,
+  Edit,
+  Trash2,
+  Calendar,
+  User,
+  Building,
+  Phone,
+  Mail,
+  FileText,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  Upload,
+  Download,
+  Eye,
+  Image,
+  Palette,
+  FileImage,
+  FileX,
+  X,
+  Video,
+  Zap,
+  Share2,
+  Repeat,
+  DollarSign,
+  CreditCard,
+  GripVertical,
+  MessageSquare,
+  Hash,
+  Camera,
+} from "lucide-react";
+import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
+import { Separator } from "../ui/separator";
+import { Switch } from "../ui/switch";
+import { ImageWithFallback } from "../figma/ImageWithFallback";
+import { VisuallyHidden } from "../ui/visually-hidden";
+import { Checkbox } from "../ui/checkbox";
+import { toast } from "sonner";
+import { globalTaskManager } from "../workflow/GlobalTaskManager";
+import {
+  FaInstagram,
+  FaTiktok,
+  FaFacebook,
+  FaYoutube,
+  FaTwitter,
+  FaLinkedin,
+  FaSnapchat,
+} from "react-icons/fa";
+import { ClientExpenseTracker } from "../client/ClientExpenseTracker";
+import { ClientContractsInvoices } from "../client/ClientContractsInvoices";
+import { formatPhone } from "@/lib/formatPhone";
+
+type SocialPlatform =
+  | "Instagram"
+  | "TikTok"
+  | "Facebook"
+  | "YouTube"
+  | "Twitter"
+  | "LinkedIn"
+  | "Snapchat";
+
+type DeliverableType =
+  | "Short Form Videos"
+  | "Long Form Videos"
+  | "Square Form Videos"
+  | "Thumbnails"
+  | "Tiles"
+  | "Hard Posts / Graphic Images"
+  | "Snapchat Episodes"
+  | "Beta Short Form"
+  | "Stories"
+  | "Text Post";
+
+type PostingSchedule = "weekly" | "bi-weekly" | "monthly" | "custom" | "one-off";
+
+interface MonthlyDeliverable {
+  id: string;
+  type: DeliverableType;
+  quantity: number; // how many per month
+  videosPerDay?: number; // how many videos per posting day (e.g., 2 videos every Tuesday)
+  platforms: SocialPlatform[];
+  postingSchedule: PostingSchedule;
+  postingDays?: string[]; // e.g., ["Monday", "Wednesday"] or ["1st", "15th"]
+  postingTimes: string[]; // e.g., ["10:00 AM", "11:00 AM", "2:00 PM"] - one for each video per day
+  description?: string;
+}
+
+interface OneOffDeliverable {
+  id: string;
+  type: DeliverableType;
+  quantity: number;
+  videosPerDay?: number;
+  platforms: SocialPlatform[];
+  postingSchedule: string;
+  postingDays?: string[];
+  postingTimes: string[];
+  description?: string;
+  status: "PENDING" | "GENERATED" | "COMPLETED";
+  createdAt: string;
+  // Billing fields
+  billedAt?: string | null;
+  invoiceId?: string | null;
+  unitPrice?: number | null;
+}
+
+interface BrandAsset {
+  id: string;
+  name: string;
+  type: "logo" | "color-palette" | "font" | "template" | "guideline" | "other";
+  fileUrl: string;
+  fileName: string;
+  fileSize: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  description?: string;
+}
+
+interface AutoInvoiceRow {
+  clientId: string;
+  name: string;
+  companyName: string;
+  email: string;
+  portalStatus: string | null;
+  autoInvoiceActive: boolean;
+  recurringAmount: number | null; // dollars in UI after load
+  // recurringDescription: string;
+  // dueDays: number;
+  // nextBillingDate: string | null;
+
+  recurringDescription: string;
+  nextBillingDate: string | null;
+  hasActiveSubscription?: boolean;
+  warning?: string | null;
+  _dirty?: boolean;
+}
+
+interface Client {
+  id: string;
+  name: string;
+  companyName: string;
+  address?: string | null;
+  email: string;
+  emails?: string[]; // Additional emails
+  phone: string;
+  phones?: string[];
+  accountManager: string;
+  accountManagerId: string;
+  startDate: string;
+  renewalDate: string;
+  status: "active" | "pending" | "expired";
+  monthlyDeliverables: MonthlyDeliverable[];
+  oneOffDeliverables: OneOffDeliverable[];
+  currentProgress: {
+    completed: number;
+    total: number;
+  };
+  lastActivity: string;
+  clientReviewRequired: string;
+  clientReviewDeliverableTypes: string[];
+  videographerRequired: string;
+  requiresClientReview: string;
+  requiresVideographer: string;
+  coverImageRequired: string;
+  requiresCoverImage: boolean;
+  hasPostingServices: boolean;
+  isTrial: boolean;
+  templateHashtags: string[];
+  brandAssets: BrandAsset[];
+  brandGuidelines: {
+    primaryColors: string[];
+    secondaryColors: string[];
+    fonts: string[];
+    logoUsage: string;
+    toneOfVoice: string;
+    brandValues: string;
+  // ── Portal access ──
+  portalAccess?: {
+    status: string;
+    nextBillingDate?: string;
+    lockedAt?: string;
+    adminUnlockedAt?: string;
+  } | null;
+    targetAudience: string;
+    contentStyle: string;
+  };
+  projectSettings: {
+    defaultVideoLength: string;
+    preferredPlatforms: string[];
+    contentApprovalRequired: boolean;
+    quickTurnaroundAvailable: boolean;
+  };
+  billing?: {
+    monthlyFee: string;
+    billingFrequency: "monthly" | "quarterly" | "annually";
+    billingDay: number; // 1-31
+    paymentMethod: "credit-card" | "bank-transfer" | "check" | "paypal";
+    nextBillingDate: string;
+    notes?: string;
+  };
+  postingSchedule?: {
+    Instagram?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+    TikTok?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+    YouTube?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+    Facebook?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+    Twitter?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+    LinkedIn?: {
+      weekdays: string;
+      weekends: string;
+      bestTimes: string;
+    };
+  };
+  slackWebhookUrl?: string;
+  slackChannelName?: string;
+  slackEnabled?: boolean;
+}
+
+const mockBrandAssets: BrandAsset[] = [
+  {
+    id: "asset-001",
+    name: "Primary Logo",
+    type: "logo",
+    fileUrl: "https://picsum.photos/800/600?random=1",
+    fileName: "techstartup-logo-primary.svg",
+    fileSize: "24 KB",
+    uploadedAt: "2024-08-15",
+    uploadedBy: "Alex Chen",
+    description: "Main logo for all digital and print materials",
+  },
+  {
+    id: "asset-002",
+    name: "Brand Color Palette",
+    type: "color-palette",
+    fileUrl: "https://picsum.photos/800/400?random=2",
+    fileName: "color-palette.png",
+    fileSize: "156 KB",
+    uploadedAt: "2024-08-15",
+    uploadedBy: "Alex Chen",
+    description: "Complete brand color system with hex codes",
+  },
+  {
+    id: "asset-003",
+    name: "Brand Guidelines PDF",
+    type: "guideline",
+    fileUrl: "https://picsum.photos/600/800?random=3",
+    fileName: "brand-guidelines-v2.pdf",
+    fileSize: "2.4 MB",
+    uploadedAt: "2024-08-20",
+    uploadedBy: "Sarah Wilson",
+    description: "Complete brand guidelines document",
+  },
+];
+
+const mockAccountManagers = [
+  { id: "mgr-001", name: "Alex Chen" },
+  { id: "mgr-002", name: "Sarah Wilson" },
+  { id: "mgr-003", name: "David Park" },
+  { id: "mgr-004", name: "Lisa Rodriguez" },
+  { id: "mgr-005", name: "James Kim" },
+];
+
+export function ClientManagement() {
+  const [clients, setClients] = useState<Client[]>([]);
+  const [showAutoInvoiceDialog, setShowAutoInvoiceDialog] = useState(false);
+  const [autoInvoiceRows, setAutoInvoiceRows] = useState<AutoInvoiceRow[]>([]);
+  const [autoInvoiceLoading, setAutoInvoiceLoading] = useState(false);
+  const [autoInvoiceSaving, setAutoInvoiceSaving] = useState(false);
+  const [runningInvoiceNow, setRunningInvoiceNow] = useState(false);
+  const [runningLockNow, setRunningLockNow] = useState(false);
+  const [runInvoiceResult, setRunInvoiceResult] = useState<string | null>(null);
+  const [runLockResult, setRunLockResult] = useState<string | null>(null);
+  const [autoInvoiceSearch, setAutoInvoiceSearch] = useState("");
+  const [showInvoiceConfirm, setShowInvoiceConfirm] = useState(false);
+  const [invoicePreview, setInvoicePreview] = useState<{
+    loading: boolean;
+    message?: string;
+    results?: Array<{ clientId: string; clientName: string; status: string; reason?: string; amountCents?: number }>;
+  }>({ loading: false });
+  const [autoInvoiceFilter, setAutoInvoiceFilter] = useState<"all" | "on" | "due" | "tomorrow">("all");
+  const [runningReviewReminder, setRunningReviewReminder] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [managerFilter, setManagerFilter] = useState<string>("all");
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [showClientDetailsDialog, setShowClientDetailsDialog] = useState(false);
+  const [uploadFolder, setUploadFolder] = useState("elements");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [newClient, setNewClient] = useState<Partial<Client>>({
+    name: "",
+    companyName: "",
+    address: "",
+    email: "",
+    emails: [], // Initialize additional emails
+    phone: "",
+    phones: [],
+    accountManagerId: "",
+    startDate: "",
+    renewalDate: "",
+    status: "active",
+    clientReviewRequired: "no",
+    clientReviewDeliverableTypes: [],
+    videographerRequired: "no",
+    coverImageRequired: "no",
+    hasPostingServices: true,
+    templateHashtags: [],
+    shootDaysPerMonth: 0,
+    scriptsRequired: false,
+    monthlyDeliverables: [],
+    oneOffDeliverables: [],
+    brandAssets: [],
+    brandGuidelines: {
+      primaryColors: [],
+      secondaryColors: [],
+      fonts: [],
+      logoUsage: "",
+      toneOfVoice: "",
+      brandValues: "",
+      targetAudience: "",
+      contentStyle: "",
+    },
+    projectSettings: {
+      defaultVideoLength: "60 seconds",
+      preferredPlatforms: [],
+      contentApprovalRequired: true,
+      quickTurnaroundAvailable: false,
+    },
+    slackWebhookUrl: "",
+    slackChannelName: "",
+    slackEnabled: false,
+  });
+
+  const [hashtagInput, setHashtagInput] = useState("");
+
+  const addTemplateHashtag = () => {
+    const raw = hashtagInput.trim().replace(/^#/, "");
+    if (!raw) return;
+    const tag = `#${raw}`;
+    const current = newClient.templateHashtags || [];
+    if (!current.includes(tag)) {
+      setNewClient({ ...newClient, templateHashtags: [...current, tag] });
+    }
+    setHashtagInput("");
+  };
+
+  const removeTemplateHashtag = (tag: string) => {
+    setNewClient({
+      ...newClient,
+      templateHashtags: (newClient.templateHashtags || []).filter((t) => t !== tag),
+    });
+  };
+
+  const addEmail = () => {
+    setNewClient({
+      ...newClient,
+      emails: [...(newClient.emails || []), ""],
+    });
+  };
+
+  const updateEmail = (index: number, value: string) => {
+    const updatedEmails = [...(newClient.emails || [])];
+    updatedEmails[index] = value;
+    setNewClient({
+      ...newClient,
+      emails: updatedEmails,
+    });
+  };
+
+  const removeEmail = (index: number) => {
+    const updatedEmails = (newClient.emails || []).filter(
+      (_, i) => i !== index
+    );
+    setNewClient({
+      ...newClient,
+      emails: updatedEmails,
+    });
+  };
+
+  const addPhone = () => {
+    setNewClient({
+      ...newClient,
+      phones: [...(newClient.phones || []), ""],
+    });
+  };
+
+  const updatePhone = (index: number, value: string) => {
+    const updatedPhones = [...(newClient.phones || [])];
+    updatedPhones[index] = value;
+    setNewClient({
+      ...newClient,
+      phones: updatedPhones,
+    });
+  };
+
+  const removePhone = (index: number) => {
+    const updatedPhones = (newClient.phones || []).filter(
+      (_, i) => i !== index
+    );
+    setNewClient({
+      ...newClient,
+      phones: updatedPhones,
+    });
+  };
+
+  // Update the initial state declaration (around line 155)
+  const [newDeliverable, setNewDeliverable] = useState<{
+    type: DeliverableType;
+    quantity: number;
+    videosPerDay?: number;
+    platforms: SocialPlatform[];
+    postingSchedule: PostingSchedule;
+    postingDays?: string[];
+    postingTimes: string[];
+    description?: string;
+    isTrial?: boolean;
+  }>({
+    type: "Short Form Videos",
+    quantity: 1,
+    videosPerDay: 1,
+    platforms: [],
+    postingSchedule: "weekly",
+    postingDays: [],
+    postingTimes: ["10:00 AM"],
+    description: "",
+    isTrial: false,
+  });
+
+  const [showAddDeliverableDialog, setShowAddDeliverableDialog] =
+    useState(false);
+  const [deliverableDialogKey, setDeliverableDialogKey] = useState(0);
+
+  // 🔥 NEW: State for editing deliverables
+  const [editingDeliverableId, setEditingDeliverableId] = useState<
+    string | null
+  >(null);
+
+  const filteredClients = clients.filter((client) => {
+    const matchesSearch =
+      client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.email.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesStatus =
+      statusFilter === "all" || client.status === statusFilter;
+    const matchesManager =
+      managerFilter === "all" || client.accountManagerId === managerFilter;
+
+    return matchesSearch && matchesStatus && matchesManager;
+  });
+
+  useEffect(() => {
+    async function loadClients() {
+      try {
+        const res = await fetch("/api/clients");
+        const data = await res.json();
+
+        setClients(Array.isArray(data.clients) ? data.clients : []);
+      } catch (err) {
+        console.error("Failed to load clients", err);
+        setClients([]);
+      }
+    }
+
+    loadClients();
+  }, []);
+
+  const loadAutoInvoiceSettings = async () => {
+    setAutoInvoiceLoading(true);
+    setRunInvoiceResult(null);
+    try {
+      const res = await fetch("/api/portal/auto-invoice-settings");
+      const data = await res.json();
+      if (data.ok) {
+        setAutoInvoiceRows(
+          data.rows.map((row: AutoInvoiceRow) => ({
+            ...row,
+            recurringAmount:
+              row.recurringAmount === null || row.recurringAmount === undefined
+                ? null
+                : Number(row.recurringAmount) / 100, // dollars, for editing
+            _dirty: false,
+          }))
+        );
+      } else {
+        toast.error(data.message || "Failed to load auto-invoice settings");
+      }
+    } catch (err) {
+      console.error("Failed to load auto-invoice settings", err);
+      toast.error("Failed to load auto-invoice settings");
+    } finally {
+      setAutoInvoiceLoading(false);
+    }
+  };
+
+  const openAutoInvoiceDialog = () => {
+    setShowAutoInvoiceDialog(true);
+    setAutoInvoiceSearch("");
+    setAutoInvoiceFilter("all");
+    setShowInvoiceConfirm(false);
+    loadAutoInvoiceSettings();
+  };
+
+  const updateAutoInvoiceRow = (clientId: string, patch: Partial<AutoInvoiceRow>) => {
+    setAutoInvoiceRows((prev) =>
+      prev.map((row) =>
+        row.clientId === clientId ? { ...row, ...patch, _dirty: true } : row
+      )
+    );
+  };
+
+  const dirtyAutoInvoiceCount = autoInvoiceRows.filter((r) => r._dirty).length;
+
+  const saveAutoInvoiceSettings = async () => {
+    const rowsToSave = autoInvoiceRows.filter((r) => r._dirty);
+    if (rowsToSave.length === 0) {
+      toast.message("No changes to save");
+      return;
+    }
+
+    // Client-side validation for turned-on rows
+    for (const row of rowsToSave) {
+      if (row.autoInvoiceActive) {
+        if (!row.recurringAmount || row.recurringAmount <= 0) {
+          toast.error(`${row.companyName || row.name}: enter a monthly amount before turning on`);
+          return;
+        }
+        if (!row.nextBillingDate) {
+          toast.error(`${row.companyName || row.name}: pick a next billing date before turning on`);
+          return;
+        }
+      }
+    }
+
+    setAutoInvoiceSaving(true);
+    try {
+      const payload = {
+        rows: rowsToSave.map((row) => ({
+          clientId: row.clientId,
+          autoInvoiceActive: row.autoInvoiceActive,
+          recurringAmount: row.recurringAmount, // dollars
+          // recurringDescription: row.recurringDescription,
+          // dueDays: row.dueDays,
+          // nextBillingDate: row.nextBillingDate
+          recurringDescription: row.recurringDescription,
+          nextBillingDate: row.nextBillingDate
+            ? String(row.nextBillingDate).slice(0, 10)
+            : null,
+          clearNextBillingDate: row.nextBillingDate === null || row.nextBillingDate === "",
+        })),
+      };
+
+      const res = await fetch("/api/portal/auto-invoice-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        const warnCount = (data.results || []).filter((r: any) => r.warning).length;
+        toast.success(
+          `Saved ${data.updated} client(s)` +
+            (data.errors?.length ? ` (${data.errors.length} skipped)` : "") +
+            (warnCount ? ` — ${warnCount} subscription warning(s)` : "")
+        );
+        if (data.errors?.length) {
+          data.errors.forEach((e: any) => toast.error(e.message));
+        }
+        await loadAutoInvoiceSettings();
+      } else {
+        toast.error(data.message || "Failed to save auto-invoice settings");
+        (data.errors || []).forEach((e: any) => toast.error(e.message));
+      }
+    } catch (err) {
+      console.error("Failed to save auto-invoice settings", err);
+      toast.error("Failed to save auto-invoice settings");
+    } finally {
+      setAutoInvoiceSaving(false);
+    }
+  };
+
+  const openInvoiceConfirm = async () => {
+    if (dirtyAutoInvoiceCount > 0) {
+      toast.error("Save your changes first, then send invoices");
+      return;
+    }
+    setShowInvoiceConfirm(true);
+    setInvoicePreview({ loading: true });
+    try {
+      const res = await fetch("/api/cron/auto-invoice?dryRun=true", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setInvoicePreview({
+          loading: false,
+          message: data.message,
+          results: data.results || [],
+        });
+      } else {
+        setInvoicePreview({ loading: false, message: data.message || "Preview failed", results: [] });
+      }
+    } catch (err) {
+      console.error(err);
+      setInvoicePreview({ loading: false, message: "Preview failed", results: [] });
+    }
+  };
+
+  const runInvoiceNow = async () => {
+    setRunningInvoiceNow(true);
+    setRunInvoiceResult(null);
+    try {
+      const res = await fetch("/api/cron/auto-invoice", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setRunInvoiceResult(data.message);
+        toast.success(data.message);
+        setShowInvoiceConfirm(false);
+        loadAutoInvoiceSettings();
+      } else {
+        setRunInvoiceResult(data.message || "Failed to run");
+        toast.error(data.message || "Failed to run auto-invoice");
+      }
+    } catch (err) {
+      console.error("Failed to run auto-invoice now", err);
+      setRunInvoiceResult("Failed to run — see console");
+      toast.error("Failed to run auto-invoice");
+    } finally {
+      setRunningInvoiceNow(false);
+    }
+  };
+
+  const runLockNow = async () => {
+    setRunningLockNow(true);
+    setRunLockResult(null);
+    try {
+      const res = await fetch("/api/cron/enforce-portal-locks", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setRunLockResult(data.message);
+        toast.success(data.message);
+      } else {
+        setRunLockResult(data.message || "Failed to run");
+        toast.error(data.message || "Failed to run lock enforcement");
+      }
+    } catch (err) {
+      console.error("Failed to run lock enforcement now", err);
+      setRunLockResult("Failed to run — see console");
+      toast.error("Failed to run lock enforcement");
+    } finally {
+      setRunningLockNow(false);
+    }
+  };
+
+  const toDateInputValueLocal = (iso: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
+  const tomorrowEtYmdLocal = () => {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const partsNow = fmt.formatToParts(new Date());
+    const y = Number(partsNow.find((p) => p.type === "year")?.value);
+    const m = Number(partsNow.find((p) => p.type === "month")?.value);
+    const d = Number(partsNow.find((p) => p.type === "day")?.value);
+    const anchor = new Date(Date.UTC(y, m - 1, d, 16, 0, 0));
+    const tomorrow = new Date(anchor.getTime() + 24 * 60 * 60 * 1000);
+    return fmt.format(tomorrow);
+  };
+
+  const filteredAutoInvoiceRows = autoInvoiceRows.filter((row) => {
+    const q = autoInvoiceSearch.trim().toLowerCase();
+    if (q) {
+      const hay = `${row.name} ${row.companyName || ""} ${row.email || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (autoInvoiceFilter === "on" && !row.autoInvoiceActive) return false;
+    if (autoInvoiceFilter === "due") {
+      if (!row.autoInvoiceActive || !row.nextBillingDate) return false;
+      if (new Date(row.nextBillingDate) > new Date()) return false;
+    }
+    if (autoInvoiceFilter === "tomorrow") {
+      if (!row.autoInvoiceActive || !row.nextBillingDate) return false;
+      const billingYmd = toDateInputValueLocal(row.nextBillingDate);
+      if (billingYmd !== tomorrowEtYmdLocal()) return false;
+    }
+    return true;
+  });
+
+  const dueTomorrowRows = autoInvoiceRows.filter((row) => {
+    if (!row.autoInvoiceActive || !row.nextBillingDate) return false;
+    return toDateInputValueLocal(row.nextBillingDate) === tomorrowEtYmdLocal();
+  });
+
+  const runReviewReminderNow = async () => {
+    setRunningReviewReminder(true);
+    try {
+      const res = await fetch("/api/cron/auto-invoice-review-reminder", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        toast.success(data.message || "Review reminder sent");
+      } else {
+        toast.error(data.message || "Failed to send review reminder");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to send review reminder");
+    } finally {
+      setRunningReviewReminder(false);
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case "active":
+        return <CheckCircle className="h-4 w-4 text-green-500" />;
+      case "pending":
+        return <Clock className="h-4 w-4 text-yellow-500" />;
+      case "expired":
+        return <AlertCircle className="h-4 w-4 text-red-500" />;
+      default:
+        return <Clock className="h-4 w-4" />;
+    }
+  };
+
+  const getStatusBadgeClasses = (status: string) => {
+    switch (status) {
+      case "active":
+        return "bg-green-50 text-green-700 border-green-300";
+      case "pending":
+        return "bg-yellow-50 text-yellow-700 border-yellow-300";
+      case "expired":
+        return "bg-red-50 text-red-700 border-red-300";
+      default:
+        return "bg-gray-50 text-gray-700 border-gray-300";
+    }
+  };
+
+
+  const getStatusVariant = (status: string) => {
+    switch (status) {
+      case "active":
+        return "default";
+      case "pending":
+        return "secondary";
+      case "expired":
+        return "destructive";
+      default:
+        return "outline";
+    }
+  };
+
+  const getProgressPercentage = (completed: number, total: number) => {
+    return Math.round((completed / total) * 100);
+  };
+
+  const getAssetTypeIcon = (type: string) => {
+    switch (type) {
+      case "logo":
+        return <Image className="h-4 w-4" />;
+      case "color-palette":
+        return <Palette className="h-4 w-4" />;
+      case "font":
+        return <FileText className="h-4 w-4" />;
+      case "template":
+        return <FileImage className="h-4 w-4" />;
+      case "guideline":
+        return <FileText className="h-4 w-4" />;
+      default:
+        return <FileText className="h-4 w-4" />;
+    }
+  };
+
+  const getPlatformBadgeColor = (platform: SocialPlatform): string => {
+    const colors: Record<SocialPlatform, string> = {
+      Instagram: "bg-pink-100 text-pink-700 border-pink-300",
+      TikTok: "bg-gray-900 text-white border-gray-700",
+      Facebook: "bg-blue-100 text-blue-700 border-blue-300",
+      YouTube: "bg-red-100 text-red-700 border-red-300",
+      Twitter: "bg-sky-100 text-sky-700 border-sky-300",
+      LinkedIn: "bg-indigo-100 text-indigo-700 border-indigo-300",
+      Snapchat: "bg-yellow-100 text-yellow-700 border-yellow-300",
+    };
+    return colors[platform] || "bg-gray-100 text-gray-700";
+  };
+
+  const getPlatformIcon = (platform: SocialPlatform) => {
+    const iconProps = { className: "h-5 w-5" };
+    const icons: Record<SocialPlatform, React.ReactElement> = {
+      Instagram: <FaInstagram {...iconProps} />,
+      TikTok: <FaTiktok {...iconProps} />,
+      Facebook: <FaFacebook {...iconProps} />,
+      YouTube: <FaYoutube {...iconProps} />,
+      Twitter: <FaTwitter {...iconProps} />,
+      LinkedIn: <FaLinkedin {...iconProps} />,
+      Snapchat: <FaSnapchat {...iconProps} />,
+    };
+    return icons[platform] || <FaInstagram {...iconProps} />;
+  };
+
+  const setAllPlatforms = () => {
+    const allPlatforms: SocialPlatform[] = [
+      "Instagram",
+      "TikTok",
+      "Facebook",
+      "YouTube",
+      "Twitter",
+      "LinkedIn",
+      "Snapchat",
+    ];
+    const currentPlatforms = newDeliverable.platforms || [];
+
+    // If all platforms are selected, deselect all. Otherwise, select all.
+    if (currentPlatforms.length === allPlatforms.length) {
+      setNewDeliverable({
+        ...newDeliverable,
+        platforms: [],
+      });
+    } else {
+      setNewDeliverable({
+        ...newDeliverable,
+        platforms: allPlatforms,
+      });
+    }
+  };
+
+  const getDeliverableTypeIcon = (type: string) => {
+    switch (type) {
+      case "Long Form Videos":
+        return <Video className="h-4 w-4" />;
+      case "Short Form Videos":
+        return <Zap className="h-4 w-4" />;
+      case "Square Form Videos":
+        return <Video className="h-4 w-4" />;
+      case "Snapchat Show Episode":
+        return <Video className="h-4 w-4" />;
+      case "Social/Hard Post":
+        return <Share2 className="h-4 w-4" />;
+      default:
+        return <FileText className="h-4 w-4" />;
+    }
+  };
+
+  const toggleDay = (day: string) => {
+    const currentDays = newDeliverable.postingDays || [];
+    if (currentDays.includes(day)) {
+      setNewDeliverable({
+        ...newDeliverable,
+        postingDays: currentDays.filter((d) => d !== day),
+      });
+    } else {
+      setNewDeliverable({
+        ...newDeliverable,
+        postingDays: [...currentDays, day],
+      });
+    }
+  };
+
+  const setEveryDay = () => {
+    const allDays = [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday",
+    ];
+    const currentDays = newDeliverable.postingDays || [];
+
+    // If all days are selected, deselect all. Otherwise, select all.
+    if (currentDays.length === 7) {
+      setNewDeliverable({
+        ...newDeliverable,
+        postingDays: [],
+      });
+    } else {
+      setNewDeliverable({
+        ...newDeliverable,
+        postingDays: allDays,
+      });
+    }
+  };
+
+  // Helper: parse a posting time string like "10:00 AM" into parts
+  const parsePostingTime = (timeStr: string): { hours: string; minutes: string; period: string } => {
+    const match = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (match) {
+      return { hours: match[1], minutes: match[2], period: match[3].toUpperCase() };
+    }
+    // Fallback: try to parse 24h format for backwards compatibility
+    const match24 = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+    if (match24) {
+      let h = parseInt(match24[1], 10);
+      const period = h >= 12 ? "PM" : "AM";
+      if (h === 0) h = 12;
+      else if (h > 12) h -= 12;
+      return { hours: String(h), minutes: match24[2], period };
+    }
+    return { hours: "10", minutes: "00", period: "AM" };
+  };
+
+  // Helper: build a posting time string from parts
+  const buildPostingTime = (hours: string, minutes: string, period: string): string => {
+    return `${hours}:${minutes} ${period}`;
+  };
+
+  // Helper: format a posting time for display (ensures AM/PM is shown)
+  const formatPostingTimeDisplay = (timeStr: string): string => {
+    const parsed = parsePostingTime(timeStr);
+    return `${parsed.hours}:${parsed.minutes} ${parsed.period}`;
+  };
+
+  // Helper: format array of posting times for display
+  const formatPostingTimesDisplay = (times: string[] | undefined): string => {
+    if (!times || times.length === 0) return "10:00 AM";
+    return times.map(formatPostingTimeDisplay).join(", ");
+  };
+
+  const updatePostingTime = (index: number, time: string) => {
+    const currentTimes = newDeliverable.postingTimes || ["10:00 AM"];
+    const newTimes = [...currentTimes];
+    newTimes[index] = time;
+    setNewDeliverable({
+      ...newDeliverable,
+      postingTimes: newTimes,
+    });
+  };
+
+  const syncPostingTimesWithVideosPerDay = (videosPerDay: number) => {
+    const currentTimes = newDeliverable.postingTimes || ["10:00 AM"];
+    const newTimes = [...currentTimes];
+
+    // If we need more times, add default ones
+    while (newTimes.length < videosPerDay) {
+      // Add times spaced 2 hours apart
+      const lastTimeStr = newTimes[newTimes.length - 1];
+      const parsed = parsePostingTime(lastTimeStr);
+      let h = parseInt(parsed.hours, 10);
+      let p = parsed.period;
+      // Add 2 hours in 12h format
+      h += 2;
+      if (h > 12) {
+        h -= 12;
+        p = p === "AM" ? "PM" : "AM";
+      } else if (h === 12) {
+        p = p === "AM" ? "PM" : "AM";
+      }
+      newTimes.push(buildPostingTime(String(h), parsed.minutes, p));
+    }
+
+    // If we have too many times, trim
+    while (newTimes.length > videosPerDay) {
+      newTimes.pop();
+    }
+
+    setNewDeliverable({
+      ...newDeliverable,
+      videosPerDay,
+      postingTimes: newTimes,
+    });
+  };
+
+  // 🔥 Replace these functions in your ClientManagement.tsx
+  // These call the API instantly when adding, editing, or deleting deliverables
+
+  // 🔥 UPDATED: Handle both add and edit - NOW WITH INSTANT API CALLS
+  // Handle both add and edit for Deliverables (Monthly and One-Off)
+  const handleAddDeliverable = async () => {
+    if (!newDeliverable.quantity || newDeliverable.quantity === 0) {
+      toast.error("Please enter a quantity");
+      return;
+    }
+
+    if (newClient.hasPostingServices !== false && (!newDeliverable.platforms || newDeliverable.platforms.length === 0)) {
+      toast.error("Please select at least one platform");
+      return;
+    }
+
+    const clientId = editingClient?.id;
+    const isOneOff = newDeliverable.postingSchedule === 'one-off';
+    const apiPath = isOneOff ? 'one-off-deliverables' : 'deliverables';
+
+    if (!clientId) {
+      // Local state only (new client creation flow)
+      if (editingDeliverableId) {
+        setNewClient((prev) => ({
+          ...prev,
+          monthlyDeliverables: !isOneOff ? (prev.monthlyDeliverables || []).map(d => d.id === editingDeliverableId ? { ...d, ...newDeliverable } as any : d) : prev.monthlyDeliverables,
+          oneOffDeliverables: isOneOff ? (prev.oneOffDeliverables || []).map(d => d.id === editingDeliverableId ? { ...d, ...newDeliverable, status: 'PENDING' } as any : d) : prev.oneOffDeliverables,
+        }));
+      } else {
+        const deliverable = {
+          id: `temp-${Date.now()}`,
+          ...newDeliverable,
+          status: 'PENDING' as const,
+          createdAt: new Date().toISOString()
+        };
+        setNewClient((prev) => ({
+          ...prev,
+          monthlyDeliverables: !isOneOff ? [...(prev.monthlyDeliverables || []), deliverable] : prev.monthlyDeliverables,
+          oneOffDeliverables: isOneOff ? [...(prev.oneOffDeliverables || []), deliverable] : prev.oneOffDeliverables,
+        }));
+      }
+      setShowAddDeliverableDialog(false);
+      resetDeliverableForm();
+      return;
+    }
+
+    // API Call (existing client flow)
+    try {
+      const method = (editingDeliverableId && !editingDeliverableId.startsWith("temp-")) ? "PUT" : "POST";
+      const url = method === "PUT"
+        ? `/api/clients/${clientId}/${apiPath}/${editingDeliverableId}`
+        : `/api/clients/${clientId}/${apiPath}`;
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newDeliverable),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to save deliverable");
+
+      // Update state
+      setClients(prev => prev.map(c => {
+        if (c.id === clientId) {
+          if (isOneOff) {
+            const list = method === "PUT"
+              ? (c.oneOffDeliverables || []).map(d => d.id === editingDeliverableId ? data.deliverable : d)
+              : [...(c.oneOffDeliverables || []), data.deliverable];
+            return { ...c, oneOffDeliverables: list };
+          } else {
+            const list = method === "PUT"
+              ? (c.monthlyDeliverables || []).map(d => d.id === editingDeliverableId ? data.deliverable : d)
+              : [...(c.monthlyDeliverables || []), data.deliverable];
+            return { ...c, monthlyDeliverables: list };
+          }
+        }
+        return c;
+      }));
+
+      // Update selected client if open
+      if (selectedClient?.id === clientId) {
+        setSelectedClient(prev => {
+          if (!prev) return null;
+          if (isOneOff) {
+            return { ...prev, oneOffDeliverables: method === "PUT" ? (prev.oneOffDeliverables || []).map(d => d.id === editingDeliverableId ? data.deliverable : d) : [...(prev.oneOffDeliverables || []), data.deliverable] };
+          } else {
+            return { ...prev, monthlyDeliverables: method === "PUT" ? (prev.monthlyDeliverables || []).map(d => d.id === editingDeliverableId ? data.deliverable : d) : [...(prev.monthlyDeliverables || []), data.deliverable] };
+          }
+        });
+      }
+
+      // The edit dialog renders its deliverable list from newClient, so it must
+      // be updated too — otherwise the change only shows after a page reload.
+      setNewClient((prev) => {
+        const upsert = <T extends { id: string }>(list: T[] | undefined): T[] =>
+          method === "PUT"
+            ? (list || []).map((d) => (d.id === editingDeliverableId ? data.deliverable : d))
+            : [...(list || []), data.deliverable];
+        return isOneOff
+          ? { ...prev, oneOffDeliverables: upsert(prev.oneOffDeliverables) }
+          : { ...prev, monthlyDeliverables: upsert(prev.monthlyDeliverables) };
+      });
+
+      toast.success(`${method === "PUT" ? "Updated" : "Added"}: ${newDeliverable.type}`);
+      setShowAddDeliverableDialog(false);
+      resetDeliverableForm();
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  // 🔥 NEW: Helper function to reset deliverable form
+  const resetDeliverableForm = () => {
+    setTimeout(() => {
+      setNewDeliverable({
+        type: "Short Form Videos",
+        quantity: 1,
+        videosPerDay: 1,
+        platforms: [],
+        postingSchedule: "weekly",
+        postingDays: [],
+        postingTimes: ["10:00 AM"],
+        description: "",
+      });
+    }, 100);
+  };
+
+  // 🔥 UPDATED: Remove deliverable - NOW WITH INSTANT API CALL
+  const handleRemoveDeliverable = async (deliverableId: string) => {
+    const clientId = editingClient?.id;
+
+    // If it's a frontend-generated ID or no client yet, just update local state
+    if (!clientId || deliverableId.startsWith("temp-")) {
+      setNewClient((prev) => ({
+        ...prev,
+        monthlyDeliverables: (prev.monthlyDeliverables || []).filter(d => d.id !== deliverableId),
+        oneOffDeliverables: (prev.oneOffDeliverables || []).filter(d => d.id !== deliverableId),
+      }));
+      toast.success("Deliverable removed");
+      return;
+    }
+
+    // 🔥 Make API call to delete
+    try {
+      // Determine if it's a monthly or one-off deliverable
+      const isOneOff = (newClient.oneOffDeliverables || []).some(d => d.id === deliverableId);
+      const apiPath = isOneOff ? "one-off-deliverables" : "deliverables";
+
+      console.log(`🗑️ Deleting ${isOneOff ? 'one-off' : 'monthly'} deliverable via API:`, deliverableId);
+
+      const res = await fetch(
+        `/api/clients/${clientId}/${apiPath}/${deliverableId}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.message || "Failed to delete deliverable");
+        return;
+      }
+
+      // Update local state
+      setNewClient((prev) => ({
+        ...prev,
+        monthlyDeliverables: (prev.monthlyDeliverables || []).filter(d => d.id !== deliverableId),
+        oneOffDeliverables: (prev.oneOffDeliverables || []).filter(d => d.id !== deliverableId),
+      }));
+
+      // Also update the main clients list
+      setClients((prev) =>
+        prev.map((c) =>
+          c.id === clientId
+            ? {
+              ...c,
+              monthlyDeliverables: (c.monthlyDeliverables || []).filter(d => d.id !== deliverableId),
+              oneOffDeliverables: (c.oneOffDeliverables || []).filter(d => d.id !== deliverableId),
+            }
+            : c
+        )
+      );
+
+      // If viewing details, update selected client
+      if (selectedClient?.id === clientId) {
+        setSelectedClient(prev => prev ? ({
+          ...prev,
+          monthlyDeliverables: (prev.monthlyDeliverables || []).filter(d => d.id !== deliverableId),
+          oneOffDeliverables: (prev.oneOffDeliverables || []).filter(d => d.id !== deliverableId),
+        }) : null);
+      }
+
+      toast.success("Deliverable deleted");
+    } catch (err) {
+      console.error("Delete deliverable error:", err);
+      toast.error("Server error");
+    }
+  };
+
+  // 🔥 handleEditDeliverable stays the same - it just opens the dialog
+  // The actual API call happens in handleAddDeliverable when saving
+  const handleEditDeliverable = (deliverable: MonthlyDeliverable) => {
+    setEditingDeliverableId(deliverable.id);
+    setNewDeliverable({
+      type: deliverable.type,
+      quantity: deliverable.quantity,
+      videosPerDay: deliverable.videosPerDay || 1,
+      platforms: deliverable.platforms,
+      postingSchedule: deliverable.postingSchedule,
+      postingDays: deliverable.postingDays || [],
+      postingTimes: deliverable.postingTimes || ["10:00 AM"],
+      description: deliverable.description || "",
+      isTrial: (deliverable as any).isTrial ?? false,
+    });
+    setDeliverableDialogKey((prev) => prev + 1);
+    setShowAddDeliverableDialog(true);
+  };
+
+  // 🔥 Handle drag and drop reordering of deliverables
+  const handleDeliverableDragEnd = (result: DropResult) => {
+    if (!result.destination) return;
+
+    const sourceIndex = result.source.index;
+    const destIndex = result.destination.index;
+
+    if (sourceIndex === destIndex) return;
+
+    const deliverables = [...(newClient.monthlyDeliverables || [])];
+    const [removed] = deliverables.splice(sourceIndex, 1);
+    deliverables.splice(destIndex, 0, removed);
+
+    setNewClient((prev) => ({
+      ...prev,
+      monthlyDeliverables: deliverables,
+    }));
+
+    toast.success("Deliverable order updated");
+  };
+
+  // 🔥 NEW: Handle editing a deliverable
+  // const handleEditDeliverable = (deliverable: MonthlyDeliverable) => {
+  //   setEditingDeliverableId(deliverable.id);
+  //   setNewDeliverable({
+  //     type: deliverable.type,
+  //     quantity: deliverable.quantity,
+  //     videosPerDay: deliverable.videosPerDay || 1,
+  //     platforms: deliverable.platforms,
+  //     postingSchedule: deliverable.postingSchedule,
+  //     postingDays: deliverable.postingDays || [],
+  //     postingTimes: deliverable.postingTimes || ["10:00"],
+  //     description: deliverable.description || "",
+  //   });
+  //   setDeliverableDialogKey((prev) => prev + 1);
+  //   setShowAddDeliverableDialog(true);
+  // };
+
+  // 🔥 UPDATED: Handle both add and edit
+  // const handleAddDeliverable = () => {
+  //   console.log("🔍 BEFORE VALIDATION - newDeliverable:", JSON.stringify(newDeliverable, null, 2));
+
+  //   if (!newDeliverable.quantity || newDeliverable.quantity === 0) {
+  //     toast.error("Please enter a quantity");
+  //     return;
+  //   }
+
+  //   if (!newDeliverable.platforms || newDeliverable.platforms.length === 0) {
+  //     toast.error("Please select at least one platform");
+  //     return;
+  //   }
+
+  //   if (editingDeliverableId) {
+  //     // 🔥 UPDATE existing deliverable
+  //     setNewClient((prev) => ({
+  //       ...prev,
+  //       monthlyDeliverables: (prev.monthlyDeliverables || []).map((d) =>
+  //         d.id === editingDeliverableId
+  //           ? {
+  //               ...d,
+  //               type: newDeliverable.type,
+  //               quantity: newDeliverable.quantity,
+  //               videosPerDay: newDeliverable.videosPerDay || 1,
+  //               platforms: newDeliverable.platforms,
+  //               postingSchedule: newDeliverable.postingSchedule,
+  //               postingDays: newDeliverable.postingDays || [],
+  //               postingTimes: newDeliverable.postingTimes || ["10:00"],
+  //               description: newDeliverable.description || "",
+  //             }
+  //           : d
+  //       ),
+  //     }));
+
+  //     toast.success(`Updated: ${newDeliverable.type}`);
+  //   } else {
+  //     // 🔥 ADD new deliverable
+  //     const deliverable: MonthlyDeliverable = {
+  //       id: `deliverable-${Date.now()}`,
+  //       type: newDeliverable.type,
+  //       quantity: newDeliverable.quantity,
+  //       videosPerDay: newDeliverable.videosPerDay || 1,
+  //       platforms: newDeliverable.platforms,
+  //       postingSchedule: newDeliverable.postingSchedule,
+  //       postingDays: newDeliverable.postingDays || [],
+  //       postingTimes: newDeliverable.postingTimes || ["10:00"],
+  //       description: newDeliverable.description || "",
+  //     };
+
+  //     console.log("✅ ADDING DELIVERABLE:", JSON.stringify(deliverable, null, 2));
+
+  //     setNewClient((prev) => ({
+  //       ...prev,
+  //       monthlyDeliverables: [...(prev.monthlyDeliverables || []), deliverable],
+  //     }));
+
+  //     toast.success(`Added: ${deliverable.type}`);
+  //   }
+
+  //   setShowAddDeliverableDialog(false);
+  //   setEditingDeliverableId(null);
+
+  //   // Reset AFTER closing dialog
+  //   setTimeout(() => {
+  //     setNewDeliverable({
+  //       type: "Short Form Videos",
+  //       quantity: 1,
+  //       videosPerDay: 1,
+  //       platforms: [],
+  //       postingSchedule: "weekly",
+  //       postingDays: [],
+  //       postingTimes: ["10:00"],
+  //       description: "",
+  //     });
+  //   }, 100);
+  // };
+
+  // const handleRemoveDeliverable = (id: string) => {
+  //   setNewClient((prev) => ({
+  //     ...prev,
+  //     monthlyDeliverables: (prev.monthlyDeliverables || []).filter(
+  //       (d) => d.id !== id
+  //     ),
+  //   }));
+  //   toast.success("Deliverable removed");
+  // };
+
+  const togglePlatform = (platform: SocialPlatform) => {
+    setNewDeliverable((prev) => {
+      const platforms = prev.platforms || [];
+      const isSelected = platforms.includes(platform);
+      return {
+        ...prev,
+        platforms: isSelected
+          ? platforms.filter((p) => p !== platform)
+          : [...platforms, platform],
+      };
+    });
+  };
+
+  const generateMonthlyTasks = (
+    clientId: string,
+    clientName: string,
+    deliverables: MonthlyDeliverable[]
+  ) => {
+    const taskManager = globalTaskManager;
+    let tasksCreated = 0;
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+
+    deliverables.forEach((deliverable) => {
+      const videosPerDay = deliverable.videosPerDay || 1;
+
+      // For each deliverable, create tasks based on quantity
+      // The quantity represents the total videos for the month
+      // videosPerDay tells us how many videos go out on each posting day
+      const totalPostingDays = Math.ceil(deliverable.quantity / videosPerDay);
+
+      for (let dayIndex = 0; dayIndex < totalPostingDays; dayIndex++) {
+        // Calculate due dates based on posting schedule
+        let dueDate = new Date(currentYear, currentMonth, 1);
+
+        if (deliverable.postingSchedule === "weekly") {
+          // Space tasks weekly throughout the month
+          dueDate.setDate(dueDate.getDate() + dayIndex * 7);
+        } else if (deliverable.postingSchedule === "bi-weekly") {
+          // Space tasks bi-weekly
+          dueDate.setDate(dueDate.getDate() + dayIndex * 14);
+        } else if (deliverable.postingSchedule === "monthly") {
+          // All tasks due at beginning of month
+          dueDate.setDate(dueDate.getDate() + dayIndex);
+        } else {
+          // Custom - distribute evenly
+          const daysInMonth = new Date(
+            currentYear,
+            currentMonth + 1,
+            0
+          ).getDate();
+          const spacing = Math.floor(daysInMonth / deliverable.quantity);
+          dueDate.setDate(dueDate.getDate() + dayIndex * spacing);
+        }
+
+        // Set due date 5 days before posting to allow for workflow
+        dueDate.setDate(dueDate.getDate() - 5);
+
+        // Determine task type based on deliverable type
+        const taskType =
+          deliverable.type === "Long Form Videos" ||
+            deliverable.type === "Square Form Videos" ||
+            deliverable.type === "Snapchat Episodes"
+            ? "video"
+            : "design";
+
+        // Determine estimated hours based on deliverable type
+        const estimatedHours =
+          deliverable.type === "Long Form Videos"
+            ? "4"
+            : deliverable.type === "Snapchat Episodes"
+              ? "3"
+              : "2";
+
+        // Create the initial editor task
+        const platformsText = deliverable.platforms.join(", ");
+        const task = taskManager.createTask({
+          title: `${deliverable.type} #${dayIndex + 1} - ${clientName}`,
+          description: `${deliverable.type
+            } deliverable for ${clientName}\\n\\nPlatforms: ${platformsText}\\nPosting Schedule: ${deliverable.postingSchedule
+            }\\n\\n${deliverable.description || "No additional notes"}`,
+          // description: `${deliverable.type} deliverable for ${clientName}\\n\\nPlatforms: ${platformsText}\\nPosting Schedule: ${deliverable.postingSchedule}\\nPosting Time: ${deliverable.defaultPostingTime}\\n\\n${deliverable.description || 'No additional notes'}`,
+          type: taskType,
+          assignedTo: "editor",
+          dueDate: dueDate.toISOString().split("T")[0],
+          estimatedHours: estimatedHours,
+          projectId: clientId,
+          createdBy: "admin",
+          createdByName: "Admin",
+          taskTypeLabel: `${deliverable.type} - ${platformsText}`,
+        });
+
+        tasksCreated++;
+      }
+    });
+
+    return tasksCreated;
+  };
+
+  //   const handleSaveClient = async () => {
+  //   // Validate required fields
+  //   if (!newClient.name?.trim()) {
+  //     toast.error("Contact name is required");
+  //     return;
+  //   }
+  //   if (!newClient.companyName?.trim()) {
+  //     toast.error("Company name is required");
+  //     return;
+  //   }
+  //   if (!newClient.email?.trim()) {
+  //     toast.error("Email is required");
+  //     return;
+  //   }
+  //   if (!newClient.phone?.trim()) {
+  //     toast.error("Phone number is required");
+  //     return;
+  //   }
+
+  //   try {
+  //     const url = editingClient
+  //       ? `/api/clients/${editingClient.id}`
+  //       : `/api/clients`;
+
+  //     const method = editingClient ? "PUT" : "POST";
+
+  //     const res = await fetch(url, {
+  //       method,
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify(newClient),
+  //     });
+
+  //     const data = await res.json();
+
+  //     if (!res.ok) {
+  //       toast.error(data.message || "Failed to save client");
+  //       return;
+  //     }
+
+  //     toast.success(editingClient ? "Client updated successfully!" : "Client created successfully!");
+
+  //     // Update UI list immediately
+  //     if (editingClient) {
+  //       setClients(prev =>
+  //         prev.map(c => (c.id === editingClient.id ? data.updated : c))
+  //       );
+  //     } else {
+  //       setClients(prev => [...prev, data.client]);
+  //     }
+
+  //     setShowAddDialog(false);
+  //     setEditingClient(null);
+
+  //     // Reset form
+  //     setNewClient({
+  //       name: "",
+  //       companyName: "",
+  //       email: "",
+  //       phone: "",
+  //       accountManagerId: "",
+  //       startDate: "",
+  //       renewalDate: "",
+  //       status: "active",
+  //       clientReviewRequired: "no",
+  //       videographerRequired: "no",
+  //       monthlyDeliverables: [],
+  //       brandAssets: [],
+  //       brandGuidelines: {
+  //         primaryColors: [],
+  //         secondaryColors: [],
+  //         fonts: [],
+  //         logoUsage: "",
+  //         toneOfVoice: "",
+  //         brandValues: "",
+  //         targetAudience: "",
+  //         contentStyle: "",
+  //       },
+  //       projectSettings: {
+  //         defaultVideoLength: "60 seconds",
+  //         preferredPlatforms: [],
+  //         contentApprovalRequired: true,
+  //         quickTurnaroundAvailable: false,
+  //       },
+  //     });
+  //   } catch (err) {
+  //     console.error("Save client failed:", err);
+  //     toast.error("Server error");
+  //   }
+  // };
+
+  //   const handleEditClient = (client: Client) => {
+  //     setEditingClient(client);
+  //     setNewClient({
+  //       name: client.name,
+  //       companyName: client.companyName,
+  //       email: client.email,
+  //       phone: client.phone,
+  //     clientReviewRequired: client.requiresClientReview ? "yes" : "no",  // ✅ Map correctly
+  //     videographerRequired: client.requiresVideographer ? "yes" : "no",  // ✅ Map correctly
+  //       accountManagerId: client.accountManagerId,
+  //       startDate: client.startDate,
+  //       renewalDate: client.renewalDate,
+  //       status: client.status,
+  //       monthlyDeliverables: client.monthlyDeliverables ?? [],
+  //       billing: client.billing,
+  //       brandGuidelines: client.brandGuidelines ?? {},
+  //       projectSettings: client.projectSettings ?? {},
+  //     });
+  //     setShowAddDialog(true);
+  //   };
+
+  // 🔥 UPDATED handleSaveClient - Replace your existing function with this
+
+  const handleSaveClient = async () => {
+    // Validate required fields
+    if (!newClient.name?.trim()) {
+      toast.error("Contact name is required");
+      return;
+    }
+    if (!newClient.companyName?.trim()) {
+      toast.error("Company name is required");
+      return;
+    }
+    if (!newClient.email?.trim()) {
+      toast.error("Email is required");
+      return;
+    }
+    if (!newClient.phone?.trim()) {
+      toast.error("Phone number is required");
+      return;
+    }
+
+    try {
+      const url = editingClient
+        ? `/api/clients/${editingClient.id}`
+        : `/api/clients`;
+
+      const method = editingClient ? "PUT" : "POST";
+
+      // 🔥 Make sure monthlyDeliverables is included in the payload
+      const payload = {
+        ...newClient,
+        monthlyDeliverables: newClient.monthlyDeliverables || [],
+        oneOffDeliverables: newClient.oneOffDeliverables || [],
+      };
+
+      console.log("📤 Sending client data:", JSON.stringify(payload, null, 2));
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      console.log("📥 Received response:", JSON.stringify(data, null, 2));
+
+      if (!res.ok) {
+        toast.error(data.message || "Failed to save client");
+        return;
+      }
+
+      toast.success(
+        editingClient
+          ? "Client updated successfully!"
+          : "Client created successfully!"
+      );
+
+      // 🔥 Update UI with the response data (includes proper deliverable IDs from DB)
+      if (editingClient) {
+        setClients((prev) =>
+          prev.map((c) => (c.id === editingClient.id ? data.updated : c))
+        );
+      } else {
+        setClients((prev) => [...prev, data.client]);
+      }
+
+      setShowAddDialog(false);
+      setEditingClient(null);
+
+      // Reset form
+      setNewClient({
+        name: "",
+        companyName: "",
+        address: "",
+        email: "",
+        emails: [],
+        phone: "",
+        phones: [],
+        accountManagerId: "",
+        startDate: "",
+        renewalDate: "",
+        status: "active",
+        clientReviewRequired: "no",
+        clientReviewDeliverableTypes: [],
+        videographerRequired: "no",
+        coverImageRequired: "no",
+        templateHashtags: [],
+        shootDaysPerMonth: 0,
+        scriptsRequired: false,
+        monthlyDeliverables: [],
+        brandAssets: [],
+        brandGuidelines: {
+          primaryColors: [],
+          secondaryColors: [],
+          fonts: [],
+          logoUsage: "",
+          toneOfVoice: "",
+          brandValues: "",
+          targetAudience: "",
+          contentStyle: "",
+        },
+        projectSettings: {
+          defaultVideoLength: "60 seconds",
+          preferredPlatforms: [],
+          contentApprovalRequired: true,
+          quickTurnaroundAvailable: false,
+        },
+      });
+      setHashtagInput("");
+    } catch (err) {
+      console.error("Save client failed:", err);
+      toast.error("Server error");
+    }
+  };
+
+  // 🔥 ALSO UPDATE handleEditClient to properly load deliverables with their IDs
+
+  const handleEditClient = (client: Client) => {
+    console.log("📝 Editing client:", client.id);
+    console.log("📦 Client deliverables:", client.monthlyDeliverables);
+
+    setEditingClient(client);
+    setNewClient({
+      name: client.name,
+      companyName: client.companyName,
+      address: client.address ?? "",
+      email: client.email,
+      emails: client.emails || [],
+      phone: client.phone,
+      phones: client.phones || [],
+      clientReviewRequired: client.requiresClientReview ? "yes" : "no",
+      clientReviewDeliverableTypes: (client as any).clientReviewDeliverableTypes ?? [],
+      videographerRequired: client.requiresVideographer ? "yes" : "no",
+      coverImageRequired: (client as any).requiresCoverImage ? "yes" : "no",
+      hasPostingServices: client.hasPostingServices ?? true,
+      templateHashtags: (client as any).templateHashtags ?? [],
+      shootDaysPerMonth: (client as any).shootDaysPerMonth ?? 0,
+      scriptsRequired: (client as any).scriptsRequired ?? false,
+      accountManagerId: client.accountManagerId,
+      startDate: client.startDate,
+      renewalDate: client.renewalDate,
+      status: client.status,
+      // 🔥 Make sure we're copying the deliverables with their IDs
+      monthlyDeliverables: (client.monthlyDeliverables ?? []).map((d) => ({
+        ...d,
+        id: d.id,
+      })),
+      oneOffDeliverables: (client.oneOffDeliverables ?? []).map((d) => ({
+        ...d,
+        id: d.id,
+      })),
+      billing: client.billing,
+      slackWebhookUrl: client.slackWebhookUrl || "",
+      slackChannelName: client.slackChannelName || "",
+      slackEnabled: client.slackEnabled ?? false,
+      brandGuidelines: client.brandGuidelines ?? {
+        primaryColors: [],
+        secondaryColors: [],
+        fonts: [],
+        logoUsage: "",
+        toneOfVoice: "",
+        brandValues: "",
+        targetAudience: "",
+        contentStyle: "",
+      },
+      projectSettings: client.projectSettings ?? {
+        defaultVideoLength: "60 seconds",
+        preferredPlatforms: [],
+        contentApprovalRequired: true,
+        quickTurnaroundAvailable: false,
+      },
+    });
+    setShowAddDialog(true);
+  };
+
+  const handleDeleteClient = async (clientId: string) => {
+    const confirmed = confirm("Are you sure you want to delete this client?");
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/clients/${clientId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        toast.error("Failed to delete client");
+        return;
+      }
+
+      // Remove from client list
+      setClients((prev) => prev.filter((c) => c.id !== clientId));
+
+      // If the user is currently viewing this client, close the dialog
+      if (selectedClient?.id === clientId) {
+        setShowClientDetailsDialog(false);
+        setSelectedClient(null);
+      }
+
+      toast.success("Client deleted");
+    } catch (err) {
+      console.error("DELETE failed:", err);
+      toast.error("Server error");
+    }
+  };
+
+  const handleViewClientDetails = async (client: Client) => {
+    try {
+      const res = await fetch(`/api/clients/${client.id}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error("Failed to load client details");
+        return;
+      }
+
+      setSelectedClient(data.client);
+      setShowClientDetailsDialog(true);
+    } catch (err) {
+      console.error("Failed to fetch client:", err);
+      toast.error("Server error");
+    }
+  };
+
+  const calculateTotalDeliverables = (
+    deliverables: MonthlyDeliverable[] | null | undefined
+  ) => {
+    if (!Array.isArray(deliverables)) return 0;
+    return deliverables.reduce((sum, d) => sum + (d?.quantity ?? 0), 0);
+  };
+
+  const handleFileUpload = async (
+    clientId: string,
+    folder: "elements" | "raw-footage",
+    files: FileList | null
+  ) => {
+    if (!files || files.length === 0) return;
+
+    const formData = new FormData();
+    formData.append("clientId", clientId);
+    formData.append("folder", folder);
+    formData.append("file", files[0]);
+
+    const res = await fetch("/api/upload/brand-asset", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      toast.error("Upload failed");
+      return;
+    }
+
+    // Update UI immediately
+    setClients((prev) =>
+      prev.map((c) =>
+        c.id === clientId
+          ? { ...c, brandAssets: [...c.brandAssets, data.asset] }
+          : c
+      )
+    );
+
+    toast.success("Uploaded successfully");
+  };
+
+  const handleGenerateOneOffTasks = async (deliverableId: string) => {
+    if (!selectedClient) return;
+
+    try {
+      toast.loading("Generating tasks...", { id: "gen-tasks" });
+      const res = await fetch(`/api/clients/${selectedClient.id}/one-off-deliverables/${deliverableId}/generate`, {
+        method: "POST",
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || "Failed to generate tasks", { id: "gen-tasks" });
+        return;
+      }
+
+      toast.success(data.message, { id: "gen-tasks" });
+
+      // Update local state
+      const updatedOneOffs = (selectedClient.oneOffDeliverables || []).map(d =>
+        d.id === deliverableId ? { ...d, status: 'GENERATED' as const } : d
+      );
+
+      setClients(prev => prev.map(c => {
+        if (c.id === selectedClient.id) {
+          return { ...c, oneOffDeliverables: updatedOneOffs };
+        }
+        return c;
+      }));
+
+      setSelectedClient(prev => prev ? ({ ...prev, oneOffDeliverables: updatedOneOffs }) : null);
+
+    } catch (err) {
+      console.error("Generate tasks failed:", err);
+      toast.error("An error occurred while generating tasks", { id: "gen-tasks" });
+    }
+  };
+
+  const ClientDetailsDialog = () => {
+    if (!selectedClient) return null;
+
+    return (
+      <Dialog
+        open={showClientDetailsDialog}
+        onOpenChange={setShowClientDetailsDialog}
+      >
+        <DialogContent className="w-auto min-w-[600px] max-w-[90vw] max-h-[90vh] overflow-hidden flex flex-col bg-white border-gray-200">
+          <DialogHeader>
+            <DialogTitle className="text-gray-900">
+              {selectedClient.companyName} - Client Details
+            </DialogTitle>
+            <DialogDescription className="text-gray-600">
+              Complete client information and monthly deliverables
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs
+            defaultValue="overview"
+            className="w-full flex flex-col flex-1 min-h-0"
+          >
+            <TabsList className="grid w-full grid-cols-4 gap-3 bg-gray-100">
+              {/* gap-3 for more spacing */}
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="deliverables">
+                Monthly Deliverables
+              </TabsTrigger>
+              <TabsTrigger value="oneoff">One-Off Projects</TabsTrigger>
+              <TabsTrigger value="brand">Brand Assets</TabsTrigger>
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+            </TabsList>
+
+            {/* Make the tab content area scrollable inside the dialog */}
+            <div className="flex-1 min-h-0 overflow-auto">
+              <TabsContent value="overview" className="space-y-4">
+                <Card className="bg-white border-gray-200">
+                  <CardHeader>
+                    <CardTitle className="text-gray-900">
+                      Contact Information
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-2 gap-6">
+                    {/* Changed from gap-4 to gap-6 for more spacing */}
+
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Contact Name</Label>
+                    <div className="flex items-center gap-2 text-gray-900">
+                      <User className="h-4 w-4" />
+                      {selectedClient.name}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Company</Label>
+                    <div className="flex items-center gap-2 text-gray-900">
+                      <Building className="h-4 w-4" />
+                      {selectedClient.companyName}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Email</Label>
+                    <div className="flex items-center gap-2 text-gray-900">
+                      <Mail className="h-4 w-4" />
+                      {selectedClient.email}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Phone</Label>
+                    <div className="flex items-center gap-2 text-gray-900">
+                      <Phone className="h-4 w-4" />
+                      {formatPhone(selectedClient.phone)}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Account Manager</Label>
+                    <div className="flex items-center gap-2 text-gray-900">
+                      <User className="h-4 w-4" />
+                      {mockAccountManagers.find(
+                        (m) => m.id === selectedClient.accountManagerId
+                      )?.name || "Not assigned"}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-gray-500">Status</Label>
+                    <div>
+                      <Badge
+                        variant="outline"
+                        className={
+                          selectedClient.status === 'active'
+                            ? 'bg-green-500 text-white border-green-600 hover:bg-green-600'
+                            : selectedClient.status === 'pending'
+                              ? 'bg-yellow-500 text-white border-yellow-600 hover:bg-yellow-600'
+                              : 'bg-red-500 text-white border-red-600 hover:bg-red-600'
+                        }
+                      >
+                        {selectedClient.status.charAt(0).toUpperCase() + selectedClient.status.slice(1)}
+                      </Badge>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900">Progress</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm text-gray-600">
+                      <span>Monthly Progress</span>
+                      <span>
+                        {selectedClient.currentProgress.completed} /{" "}
+                        {selectedClient.currentProgress.total}
+                      </span>
+                    </div>
+                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 transition-all"
+                        style={{
+                          width: `${getProgressPercentage(
+                            selectedClient.currentProgress.completed,
+                            selectedClient.currentProgress.total
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="deliverables" className="space-y-4">
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900 flex items-center gap-2">
+                    <Repeat className="h-5 w-5" />
+                    Monthly Recurring Deliverables
+                  </CardTitle>
+                  <p className="text-sm text-gray-600">
+                    These deliverables automatically generate tasks each month
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-3 max-h-[400px] overflow-y-auto">
+                  {/* {selectedClient.monthlyDeliverables.map((deliverable) => ( */}
+                  {(selectedClient.monthlyDeliverables ?? []).map(
+                    (deliverable) => (
+                      <div
+                        key={deliverable.id}
+                        className="p-4 bg-gray-50 rounded-lg border border-gray-200"
+                      >
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            {getDeliverableTypeIcon(deliverable.type)}
+                            <div>
+                              <div className="flex items-center gap-2 text-gray-900">
+                                {deliverable.type}
+                                {(deliverable as any).isTrial && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-amber-100 text-amber-700 border border-amber-300 rounded">
+                                    TRIAL
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-sm text-gray-600">
+                                {deliverable.quantity} per month (
+                                {deliverable.videosPerDay || 1} per day) •{" "}
+                                {deliverable.postingSchedule}
+                              </div>
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="text-gray-700">
+                            {deliverable.postingDays &&
+                              deliverable.postingDays.length > 0
+                              ? deliverable.postingDays.join(", ")
+                              : "Various"}
+                          </Badge>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {deliverable.platforms.map((platform) => (
+                            <Badge
+                              key={platform}
+                              variant="outline"
+                              className={getPlatformBadgeColor(platform)}
+                            >
+                              {platform}
+                            </Badge>
+                          ))}
+                        </div>
+
+                        {deliverable.description && (
+                          <p className="text-sm text-gray-600 mt-2">
+                            {deliverable.description}
+                          </p>
+                        )}
+
+                        <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                          <Clock className="h-3 w-3" />
+                          Posting time
+                          {(deliverable.postingTimes?.length || 1) > 1
+                            ? "s"
+                            : ""}
+                          : {formatPostingTimesDisplay(deliverable.postingTimes)}
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {/* {selectedClient.monthlyDeliverables.length === 0 && (
+                    <div className="text-center py-8 text-gray-400">
+                      No monthly deliverables configured
+                    </div>
+                  )} */}
+
+                  {!selectedClient.monthlyDeliverables ||
+                    (selectedClient.monthlyDeliverables.length === 0 && (
+                      <div className="text-center py-8 text-gray-400">
+                        No monthly deliverables configured
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="oneoff" className="space-y-4">
+              <Card className="bg-white border-gray-200">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div>
+                    <CardTitle className="text-gray-900 flex items-center gap-2">
+                      <Zap className="h-5 w-5 text-yellow-500" />
+                      One-Off Projects / Packages
+                    </CardTitle>
+                    <p className="text-sm text-gray-600">
+                      Generate a fixed number of tasks once for a project or bundle.
+                    </p>
+                  </div>
+                  <Button size="sm" onClick={() => {
+                    setEditingClient(selectedClient);
+                    setNewClient(prev => ({ ...prev, hasPostingServices: selectedClient.hasPostingServices ?? true }));
+                    setNewDeliverable({
+                      type: "Short Form Videos",
+                      quantity: 1,
+                      videosPerDay: 1,
+                      platforms: [],
+                      postingSchedule: 'one-off',
+                      postingDays: [],
+                      postingTimes: ["10:00 AM"],
+                      description: "",
+                    });
+                    setEditingDeliverableId(null);
+                    setShowAddDeliverableDialog(true);
+                  }}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Project
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {(selectedClient.oneOffDeliverables ?? []).map((deliverable) => (
+                    <div
+                      key={deliverable.id}
+                      className="p-4 bg-gray-50 rounded-lg border border-gray-200"
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          {getDeliverableTypeIcon(deliverable.type)}
+                          <div>
+                            <div className="text-gray-900 font-medium">
+                              {deliverable.type}
+                            </div>
+                            <div className="text-sm text-gray-600">
+                              {deliverable.quantity} Total Tasks • Status: {deliverable.status}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {deliverable.status === 'PENDING' ? (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              className="bg-green-600 hover:bg-green-700 text-white"
+                              onClick={() => handleGenerateOneOffTasks(deliverable.id)}
+                            >
+                              Generate Tasks
+                            </Button>
+                          ) : (
+                            <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">
+                              Generated
+                            </Badge>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-blue-600 hover:text-blue-700"
+                            onClick={() => {
+                              setEditingClient(selectedClient);
+                              setNewClient(prev => ({ ...prev, hasPostingServices: selectedClient.hasPostingServices ?? true }));
+                              setEditingDeliverableId(deliverable.id);
+                              setNewDeliverable({
+                                type: deliverable.type,
+                                quantity: deliverable.quantity,
+                                videosPerDay: deliverable.videosPerDay,
+                                platforms: deliverable.platforms,
+                                postingSchedule: 'one-off',
+                                postingDays: deliverable.postingDays,
+                                postingTimes: deliverable.postingTimes,
+                                description: deliverable.description
+                              });
+                              setShowAddDeliverableDialog(true);
+                            }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-700" onClick={async () => {
+                            if (confirm("Delete this project? Tasks will remain if already generated.")) {
+                              await fetch(`/api/clients/${selectedClient.id}/one-off-deliverables/${deliverable.id}`, { method: 'DELETE' });
+                              setSelectedClient(prev => prev ? ({
+                                ...prev,
+                                oneOffDeliverables: (prev.oneOffDeliverables || []).filter(d => d.id !== deliverable.id)
+                              }) : null);
+                              // Sync with main clients state
+                              setClients(prev => prev.map(c => {
+                                if (c.id === selectedClient.id) {
+                                  return {
+                                    ...c,
+                                    oneOffDeliverables: (c.oneOffDeliverables || []).filter(d => d.id !== deliverable.id)
+                                  };
+                                }
+                                return c;
+                              }));
+                              toast.success("Deleted project");
+                            }
+                          }}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {deliverable.platforms.map((platform) => (
+                          <Badge
+                            key={platform}
+                            variant="outline"
+                            className={getPlatformBadgeColor(platform)}
+                          >
+                            {platform}
+                          </Badge>
+                        ))}
+                      </div>
+
+                      {deliverable.description && (
+                        <p className="text-sm text-gray-600 mt-2 italic">
+                          "{deliverable.description}"
+                        </p>
+                      )}
+
+                      <div className="text-xs text-gray-400 mt-3 flex items-center gap-2">
+                        <Calendar className="h-3 w-3" />
+                        Created: {new Date(deliverable.createdAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                  ))}
+
+                  {(!selectedClient.oneOffDeliverables || selectedClient.oneOffDeliverables.length === 0) && (
+                    <div className="text-center py-12 bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
+                      <Zap className="h-8 w-8 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500">No one-off projects or packages found.</p>
+                      <Button variant="link" onClick={() => {
+                        setEditingClient(selectedClient);
+                        setNewClient(prev => ({ ...prev, hasPostingServices: selectedClient.hasPostingServices ?? true }));
+                        setNewDeliverable({
+                          ...newDeliverable,
+                          postingSchedule: 'one-off'
+                        });
+                        setShowAddDeliverableDialog(true);
+                      }}>
+                        Create your first project bundle
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="brand" className="space-y-4">
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900">Brand Assets</CardTitle>
+                </CardHeader>
+
+                <CardContent className="space-y-4">
+                  {/* Upload controls */}
+                  <div className="flex items-center gap-3">
+                    <Select
+                      value={uploadFolder}
+                      onValueChange={setUploadFolder}
+                    >
+                      <SelectTrigger className="w-48 bg-white border-gray-200">
+                        <SelectValue placeholder="Select Folder" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="elements">
+                          Elements Folder
+                        </SelectItem>
+                        <SelectItem value="raw-footage">
+                          Raw Footage Folder
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {/* Hidden file input */}
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={(e) =>
+                        handleFileUpload(
+                          selectedClient.id,
+                          uploadFolder as "elements" | "raw-footage",
+                          e.target.files
+                        )
+                      }
+                    />
+
+                    {/* Upload button */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="gap-2"
+                      onClick={() => {
+                        if (fileInputRef.current) fileInputRef.current.click();
+                      }}
+                    >
+                      <Upload className="h-4 w-4" />
+                      Upload Asset
+                    </Button>
+                  </div>
+
+                  {/* Assets grid */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {(selectedClient.brandAssets ?? []).map((asset) => (
+                      <div
+                        key={asset.id}
+                        className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          {getAssetTypeIcon(asset.type)}
+                          <span className="text-gray-900">{asset.name}</span>
+                        </div>
+                        <div className="text-xs text-gray-600">
+                          {asset.fileName} • {asset.fileSize}
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                          >
+                            <Eye className="h-3 w-3 mr-1" />
+                            View
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                          >
+                            <Download className="h-3 w-3 mr-1" />
+                            Download
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {!selectedClient.brandAssets ||
+                    (selectedClient.brandAssets.length === 0 && (
+                      <div className="text-center py-8 text-gray-400">
+                        No brand assets uploaded
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900">
+                    Brand Guidelines
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label className="text-gray-500">Tone of Voice</Label>
+                    <p className="text-gray-900">
+                      {selectedClient.brandGuidelines.toneOfVoice}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-gray-500">Target Audience</Label>
+                    <p className="text-gray-900">
+                      {selectedClient.brandGuidelines.targetAudience}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-gray-500">Content Style</Label>
+                    <p className="text-gray-900">
+                      {selectedClient.brandGuidelines.contentStyle}
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="settings" className="space-y-4">
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900">
+                    Project Settings
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label className="text-gray-500">
+                      Default Video Length
+                    </Label>
+                    <p className="text-gray-900">
+                      {selectedClient.projectSettings.defaultVideoLength}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-gray-500">Preferred Platforms</Label>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {selectedClient.projectSettings.preferredPlatforms.map(
+                        (platform) => (
+                          <Badge
+                            key={platform}
+                            variant="outline"
+                            className="text-gray-700"
+                          >
+                            {platform}
+                          </Badge>
+                        )
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        checked={
+                          selectedClient.projectSettings.contentApprovalRequired
+                        }
+                        disabled
+                      />
+                      <Label className="text-gray-700">
+                        Content Approval Required
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        checked={
+                          selectedClient.projectSettings
+                            .quickTurnaroundAvailable
+                        }
+                        disabled
+                      />
+                      <Label className="text-gray-700">
+                        Quick Turnaround Available
+                      </Label>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Client Review Setting */}
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900 flex items-center gap-2">
+                    <Eye className="h-5 w-5" />
+                    Client Review Settings
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Requires Client Review</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        When enabled, QC-approved tasks go to the client for review before being marked complete.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={selectedClient.requiresClientReview ?? false}
+                      onCheckedChange={async (checked) => {
+                        try {
+                          const currentTypes = (selectedClient as any).clientReviewDeliverableTypes ?? [];
+                          const res = await fetch(`/api/clients/${selectedClient.id}/client-review`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              requiresClientReview: checked,
+                              clientReviewDeliverableTypes: currentTypes,
+                            }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || 'Failed');
+
+                          setClients(prev => prev.map(c =>
+                            c.id === selectedClient.id
+                              ? { ...c, requiresClientReview: checked, clientReviewDeliverableTypes: checked ? currentTypes : [] }
+                              : c
+                          ));
+                          setSelectedClient({
+                            ...selectedClient,
+                            requiresClientReview: checked,
+                            clientReviewDeliverableTypes: checked ? currentTypes : [],
+                          } as any);
+
+                          toast.success(
+                            checked
+                              ? 'Client review enabled'
+                              : 'Client review disabled'
+                          );
+                        } catch (err: any) {
+                          console.error('Toggle client review error:', err);
+                          toast.error(err.message || 'Failed to update client review');
+                        }
+                      }}
+                    />
+                  </div>
+
+                  {(selectedClient.requiresClientReview ?? false) && (
+                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">Which deliverable types go to client review?</p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Leave all unchecked to send every task to review. Check specific types to only send those.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(["SF", "LF", "SQF", "BSF", "HP", "SEP", "ST", "TP"] as const).map((type) => {
+                          const labels: Record<string, string> = {
+                            SF: "Short Form (SF)",
+                            LF: "Long Form (LF)",
+                            SQF: "Square Form (SQF)",
+                            BSF: "Beta Short Form (BSF)",
+                            HP: "Hard Posts (HP)",
+                            SEP: "Snapchat Episodes (SEP)",
+                            ST: "Stories (ST)",
+                            TP: "Text Post (TP)",
+                          };
+                          const currentTypes: string[] = (selectedClient as any).clientReviewDeliverableTypes ?? [];
+                          const checked = currentTypes.includes(type);
+                          return (
+                            <label key={type} className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-gray-100">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={async () => {
+                                  const next = checked
+                                    ? currentTypes.filter((t) => t !== type)
+                                    : [...currentTypes, type];
+                                  try {
+                                    const res = await fetch(`/api/clients/${selectedClient.id}/client-review`, {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        requiresClientReview: true,
+                                        clientReviewDeliverableTypes: next,
+                                      }),
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok) throw new Error(data.error || 'Failed');
+
+                                    setClients(prev => prev.map(c =>
+                                      c.id === selectedClient.id
+                                        ? { ...c, clientReviewDeliverableTypes: next }
+                                        : c
+                                    ));
+                                    setSelectedClient({ ...selectedClient, clientReviewDeliverableTypes: next } as any);
+                                  } catch (err: any) {
+                                    toast.error(err.message || 'Failed to update');
+                                  }
+                                }}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                              />
+                              <span className="text-sm text-gray-700">{labels[type]}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {((selectedClient as any).clientReviewDeliverableTypes ?? []).length === 0 && (
+                        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-md">
+                          <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                          <p className="text-xs text-amber-700">
+                            No types selected — all tasks will go to client review
+                          </p>
+                        </div>
+                      )}
+                      {((selectedClient as any).clientReviewDeliverableTypes ?? []).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {((selectedClient as any).clientReviewDeliverableTypes as string[]).map((t) => (
+                            <span key={t} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                              {t}
+                            </span>
+                          ))}
+                          <span className="text-xs text-gray-500 self-center">will go to review · others skip</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Shoot Days Setting */}
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900 flex items-center gap-2">
+                    <Camera className="h-5 w-5" />
+                    Shoot Days
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Shoot days per month</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Tracking only — not enforced as a hard cap. Also drives how many
+                        shoot tasks get auto-created for the videographer on the 1st of
+                        each month.
+                      </p>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      max={99}
+                      value={(selectedClient as any).shootDaysPerMonth ?? 0}
+                      onChange={async (e) => {
+                        const value = Math.max(0, Math.min(99, Number(e.target.value) || 0));
+                        try {
+                          const res = await fetch(`/api/clients/${selectedClient.id}/shoot-days`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ shootDaysPerMonth: value }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || 'Failed');
+
+                          setClients(prev => prev.map(c =>
+                            c.id === selectedClient.id ? { ...c, shootDaysPerMonth: value } as any : c
+                          ));
+                          setSelectedClient({ ...selectedClient, shootDaysPerMonth: value } as any);
+                          toast.success('Shoot days per month updated');
+                        } catch (err: any) {
+                          console.error('Update shoot days error:', err);
+                          toast.error(err.message || 'Failed to update shoot days');
+                        }
+                      }}
+                      className="w-20 h-9 px-2 rounded-md border border-gray-300 text-sm text-right"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Scripts required</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        When on, every SF/LF deliverable task created by the monthly
+                        generation run also gets a script (auto-linked to its raw-footage
+                        folder and editor task). When off, tasks and folders still generate
+                        as normal, just with no script attached.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={(selectedClient as any).scriptsRequired ?? false}
+                      onCheckedChange={async (checked) => {
+                        try {
+                          const res = await fetch(`/api/clients/${selectedClient.id}/scripts-required`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ scriptsRequired: checked }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || 'Failed');
+
+                          setClients(prev => prev.map(c =>
+                            c.id === selectedClient.id ? { ...c, scriptsRequired: checked } as any : c
+                          ));
+                          setSelectedClient({ ...selectedClient, scriptsRequired: checked } as any);
+                          toast.success('Scripts required updated');
+                        } catch (err: any) {
+                          console.error('Update scripts required error:', err);
+                          toast.error(err.message || 'Failed to update scripts required');
+                        }
+                      }}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Cover Image Setting */}
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900 flex items-center gap-2">
+                    <Image className="h-5 w-5" />
+                    Cover Image Settings
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Requires Cover Image</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        When enabled, the Scheduler shows a checkmark on this client's Short Form tasks confirming the editor uploaded a cover image before posting.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={(selectedClient as any).requiresCoverImage ?? false}
+                      onCheckedChange={async (checked) => {
+                        try {
+                          const res = await fetch(`/api/clients/${selectedClient.id}/cover-image`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ requiresCoverImage: checked }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || 'Failed');
+
+                          setClients(prev => prev.map(c =>
+                            c.id === selectedClient.id ? { ...c, requiresCoverImage: checked } as any : c
+                          ));
+                          setSelectedClient({ ...selectedClient, requiresCoverImage: checked } as any);
+
+                          toast.success(checked ? 'Cover image requirement enabled' : 'Cover image requirement disabled');
+                        } catch (err: any) {
+                          console.error('Toggle cover image setting error:', err);
+                          toast.error(err.message || 'Failed to update cover image setting');
+                        }
+                      }}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Trial Client Setting */}
+              <Card className="bg-white border-gray-200">
+                <CardHeader>
+                  <CardTitle className="text-gray-900 flex items-center gap-2">
+                    <Zap className="h-5 w-5" />
+                    Trial Settings
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Trial Client</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        When enabled, all tasks for this client will be marked as trial reels.
+                        Schedulers will see a &quot;Trial&quot; tag on these tasks.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={selectedClient.isTrial ?? false}
+                      onCheckedChange={async (checked) => {
+                        try {
+                          const res = await fetch(`/api/clients/${selectedClient.id}/toggle-trial`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ isTrial: checked }),
+                          });
+                          const data = await res.json();
+                          if (!res.ok) throw new Error(data.error || 'Failed');
+
+                          // Update client + deliverables in state
+                          const updatedDeliverables = (selectedClient.monthlyDeliverables || []).map(
+                            (d: any) => ({ ...d, isTrial: checked })
+                          );
+
+                          setClients(prev => prev.map(c =>
+                            c.id === selectedClient.id
+                              ? { ...c, isTrial: checked, monthlyDeliverables: updatedDeliverables }
+                              : c
+                          ));
+                          setSelectedClient({
+                            ...selectedClient,
+                            isTrial: checked,
+                            monthlyDeliverables: updatedDeliverables,
+                          });
+
+                          toast.success(
+                            checked
+                              ? `Marked as trial — ${data.deliverablesUpdated || 0} deliverables updated`
+                              : `Removed trial — ${data.deliverablesUpdated || 0} deliverables updated`
+                          );
+                        } catch (err: any) {
+                          console.error('Toggle trial error:', err);
+                          toast.error(err.message || 'Failed to toggle trial');
+                        }
+                      }}
+                    />
+                  </div>
+                  {selectedClient.isTrial && (
+                    <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+                      <AlertCircle className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                      <p className="text-xs text-amber-700">
+                        All current and future tasks for this client are marked as trial.
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </div>
+          </Tabs>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowClientDetailsDialog(false)}
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <Tabs defaultValue="active-clients">
+        <TabsList className="mb-2">
+          <TabsTrigger value="active-clients">Active Clients</TabsTrigger>
+          <TabsTrigger value="pre-clients">Pre-Clients & Quotes</TabsTrigger>
+        </TabsList>
+
+        {/* ── Active Clients tab (existing content) ── */}
+        <TabsContent value="active-clients" className="space-y-6 mt-0">
+      {/* Filters + Add Client — single row */}
+      <div className="flex items-center gap-4">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search clients..."
+            value={searchTerm ?? ""}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10 bg-secondary/30 h-10 border-transparent focus-visible:ring-1 focus-visible:ring-primary/20 transition-all rounded-full"
+          />
+        </div>
+        <FilterSelect
+          value={statusFilter}
+          onValueChange={setStatusFilter}
+          placeholder="Filter by status"
+          className="w-[160px]"
+          icon={<Filter className="h-4 w-4 mr-2" />}
+          options={[
+            { value: "all", label: "All Status" },
+            { value: "active", label: "Active" },
+            { value: "pending", label: "Pending" },
+            { value: "expired", label: "Expired" },
+          ]}
+        />
+        <FilterSelect
+          value={managerFilter}
+          onValueChange={setManagerFilter}
+          placeholder="Filter by manager"
+          className="w-[180px]"
+          icon={<User className="h-4 w-4 mr-2" />}
+          options={[
+            { value: "all", label: "All Managers" },
+            ...mockAccountManagers.map((manager) => ({ value: manager.id, label: manager.name })),
+          ]}
+        />
+        <div className="flex-1" />
+        <Button
+          variant="outline"
+          onClick={openAutoInvoiceDialog}
+          className="gap-2 shrink-0"
+        >
+          <DollarSign className="h-4 w-4" />
+          Auto-Invoice Settings
+        </Button>
+        <Button
+          onClick={() => {
+            setEditingClient(null);
+            setShowAddDialog(true);
+          }}
+          className="gap-2 shrink-0"
+        >
+          <Plus className="h-4 w-4" />
+          Add Client
+        </Button>
+      </div>
+
+      {/* Client List */}
+      <div className="grid gap-6">
+        {filteredClients.map((client) => (
+          <Card
+            key={client.id}
+            className="bg-white border-gray-200 hover:border-gray-300 hover:shadow-sm transition-all"
+          >
+            <CardContent className="p-6">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <h3 className="text-gray-900">{client.companyName}</h3>
+                    {/* <Badge
+                      variant={getStatusVariant(client.status)}
+                      className="flex items-center gap-1"
+                    >
+                      {getStatusIcon(client.status)}
+                      {client.status.charAt(0).toUpperCase() +
+                        client.status.slice(1)}
+                    </Badge> */}
+
+                    <Badge
+                      variant="outline"
+                      className={`flex items-center gap-1 ${getStatusBadgeClasses(
+                        client.status
+                      )}`}
+                    >
+                      {getStatusIcon(client.status)}
+                      {client.status.charAt(0).toUpperCase() +
+                        client.status.slice(1)}
+                    </Badge>
+
+                    {/* Portal access tag */}
+                    {client.portalAccess && (() => {
+                      const ps = client.portalAccess!.status;
+                      const cfg: Record<string, { label: string; cls: string }> = {
+                        ACTIVE:           { label: 'Paid',      cls: 'bg-green-100 text-green-700 border-green-200' },
+                        ADMIN_UNLOCKED:   { label: 'Unlocked',  cls: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
+                        LOCKED:           { label: 'Locked',    cls: 'bg-red-100 text-red-700 border-red-200' },
+                        PAYMENT_PENDING:  { label: 'Awaiting payment', cls: 'bg-orange-100 text-orange-700 border-orange-200' },
+                        CONTRACT_PENDING: { label: 'Awaiting contract', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+                        ONBOARDING:       { label: 'Onboarding', cls: 'bg-purple-100 text-purple-700 border-purple-200' },
+                      };
+                      const tag = cfg[ps];
+                      if (!tag) return null;
+                      return (
+                        <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${tag.cls}`}>
+                          {tag.label}
+                        </span>
+                      );
+                    })()}
+
+                    {/* Admin unlock/lock button */}
+                    {client.portalAccess && (
+                      client.portalAccess.status === 'ACTIVE' ? (
+                        <button
+                          className="text-xs text-red-500 hover:text-red-700 underline ml-1"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!window.confirm(`Lock ${client.companyName || client.name}'s portal? They won't be able to access it until unlocked.`)) return;
+                            await fetch('/api/portal/admin-unlock', {
+                              method: 'DELETE',
+                              headers: { 'Content-Type': 'application/json' },
+                              credentials: 'include',
+                              body: JSON.stringify({ clientId: client.id }),
+                            });
+                            window.location.reload();
+                          }}
+                        >
+                          Lock
+                        </button>
+                      ) : client.portalAccess.status === 'LOCKED' ? (
+                        <button
+                          className="text-xs text-blue-600 hover:text-blue-800 underline ml-1"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await fetch('/api/portal/admin-unlock', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              credentials: 'include',
+                              body: JSON.stringify({ clientId: client.id }),
+                            });
+                            window.location.reload();
+                          }}
+                        >
+                          Unlock
+                        </button>
+                      ) : client.portalAccess.status === 'ADMIN_UNLOCKED' ? (
+                        <button
+                          className="text-xs text-red-500 hover:text-red-700 underline ml-1"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await fetch('/api/portal/admin-unlock', {
+                              method: 'DELETE',
+                              headers: { 'Content-Type': 'application/json' },
+                              credentials: 'include',
+                              body: JSON.stringify({ clientId: client.id }),
+                            });
+                            window.location.reload();
+                          }}
+                        >
+                          Re-lock
+                        </button>
+                      ) : null
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    <div>
+                      <Label className="text-gray-500 text-xs">Contact</Label>
+                      <p className="text-gray-900 text-sm">{client.name}</p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500 text-xs">
+                        Account Manager
+                      </Label>
+                      <p className="text-gray-900 text-sm">
+                        {client.accountManager}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500 text-xs">
+                        Monthly Deliverables
+                      </Label>
+                      <p className="text-gray-900 text-sm">
+                        {calculateTotalDeliverables(
+                          client.monthlyDeliverables ?? []
+                        )}{" "}
+                        items
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-gray-500 text-xs">Progress</Label>
+                      <p className="text-gray-900 text-sm">
+                        {client.currentProgress.completed}/
+                        {client.currentProgress.total}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {(client.monthlyDeliverables ?? [])
+                      .slice(0, 3)
+                      .map((deliverable) => (
+                        <Badge
+                          key={deliverable.id}
+                          variant="outline"
+                          className="text-gray-700 gap-1"
+                        >
+                          {getDeliverableTypeIcon(deliverable.type)}
+                          {deliverable.quantity} {deliverable.type}
+                        </Badge>
+                      ))}
+                    {(client.monthlyDeliverables?.length ?? 0) > 3 && (
+                      <Badge variant="outline" className="text-gray-500">
+                        +{(client.monthlyDeliverables?.length ?? 0) - 3} more
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleViewClientDetails(client)}
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleEditClient(client)}
+                  >
+                    <Edit className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleDeleteClient(client.id)}
+                    className="text-red-600 hover:text-red-700"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+
+        {filteredClients.length === 0 && (
+          <Card className="bg-white border-gray-200">
+            <CardContent className="p-12 text-center">
+              <p className="text-gray-400">No clients found</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Add/Edit Client Dialog */}
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <DialogContent className="!max-w-[1400px] w-[95vw] h-[95vh] !max-h-[95vh] overflow-y-auto bg-white border-gray-200">
+          <DialogHeader>
+            <DialogTitle className="text-gray-900">
+              {editingClient ? "Edit Client" : "Add New Client"}
+            </DialogTitle>
+            <DialogDescription className="text-gray-600">
+              {editingClient
+                ? "Update client information and monthly deliverables"
+                : "Add a new client with their monthly deliverable schedule"}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6">
+            {/* Basic Information */}
+            <div className="space-y-4">
+              <h3 className="text-gray-900">Basic Information</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="name" className="text-gray-700">
+                    Contact Name
+                  </Label>
+                  <Input
+                    id="name"
+                    value={newClient.name ?? ""}
+                    onChange={(e) =>
+                      setNewClient({ ...newClient, name: e.target.value })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="company" className="text-gray-700">
+                    Company
+                  </Label>
+                  <Input
+                    id="company"
+                    value={newClient.companyName ?? ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        companyName: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="address" className="text-gray-700">
+                    Address
+                  </Label>
+                  <Input
+                    id="address"
+                    value={newClient.address ?? ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        address: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                {/* Primary Email */}
+                <div className="space-y-2">
+                  <Label htmlFor="email" className="text-gray-700">
+                    Primary Email *
+                  </Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    value={newClient.email ?? ""}
+                    onChange={(e) =>
+                      setNewClient({ ...newClient, email: e.target.value })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                {/* Primary Phone */}
+                <div className="space-y-2">
+                  <Label htmlFor="phone" className="text-gray-700">
+                    Primary Phone *
+                  </Label>
+                  <Input
+                    id="phone"
+                    value={newClient.phone ?? ""}
+                    onChange={(e) =>
+                      setNewClient({ ...newClient, phone: e.target.value })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                <div className="flex items-center space-x-2 py-4">
+                  <Switch
+                    id="has-posting-services"
+                    checked={newClient.hasPostingServices ?? true}
+                    onCheckedChange={(checked) =>
+                      setNewClient({ ...newClient, hasPostingServices: checked })
+                    }
+                  />
+                  <Label htmlFor="has-posting-services" className="text-gray-700 font-medium">
+                    Posting Services Provided
+                  </Label>
+                </div>
+
+                {/* Additional Emails Section */}
+                <div className="space-y-2 col-span-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-gray-700">Additional Emails</Label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={addEmail}
+                      className="gap-1"
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add Email
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Each address gets its own invoice email when an invoice is sent (in addition to the primary email via Stripe).
+                  </p>
+                  {(newClient.emails || []).map((email, index) => (
+                    <div key={index} className="flex gap-2">
+                      <Input
+                        type="email"
+                        value={email}
+                        onChange={(e) => updateEmail(index, e.target.value)}
+                        placeholder="additional@email.com"
+                        className="bg-white border-gray-200 text-gray-900"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeEmail(index)}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Additional Phones Section */}
+                <div className="space-y-2 col-span-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-gray-700">
+                      Additional Phone Numbers
+                    </Label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={addPhone}
+                      className="gap-1"
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add Phone
+                    </Button>
+                  </div>
+                  {(newClient.phones || []).map((phone, index) => (
+                    <div key={index} className="flex gap-2">
+                      <Input
+                        type="tel"
+                        value={phone}
+                        onChange={(e) => updatePhone(index, e.target.value)}
+                        placeholder="+1 (555) 000-0000"
+                        className="bg-white border-gray-200 text-gray-900"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removePhone(index)}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Account Manager */}
+                <div className="space-y-2">
+                  <Label htmlFor="accountManager" className="text-gray-700">
+                    Account Manager
+                  </Label>
+                  <Select
+                    value={newClient.accountManagerId || undefined}
+                    onValueChange={(value) =>
+                      setNewClient({ ...newClient, accountManagerId: value })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue placeholder="Select manager" />
+                    </SelectTrigger>
+                    {/* <SelectContent>
+          {mockAccountManagers.map((manager) => (
+            <SelectItem key={manager.id} value={manager.id}>
+              {manager.name}
+            </SelectItem>
+          ))}
+        </SelectContent> */}
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="status" className="text-gray-700">
+                    Status
+                  </Label>
+                  <Select
+                    value={newClient.status}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        status: value as "active" | "pending" | "expired",
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="expired">Expired</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="clientReviewRequired"
+                    className="text-gray-700"
+                  >
+                    Client Review Required
+                  </Label>
+                  <Select
+                    value={newClient.clientReviewRequired ?? "no"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        clientReviewRequired: value,
+                        clientReviewDeliverableTypes: value === "no" ? [] : (newClient.clientReviewDeliverableTypes ?? []),
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue placeholder="Select option" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {newClient.clientReviewRequired === "yes" && (
+                    <div className="mt-2 space-y-1.5 rounded-md border border-gray-200 bg-gray-50 p-3">
+                      <p className="text-xs font-medium text-gray-600 mb-2">Review which deliverable types?</p>
+                      {(["SF", "LF", "SQF", "BSF", "HP", "SEP", "ST", "TP"] as const).map((type) => {
+                        const labels: Record<string, string> = {
+                          SF: "Short Form (SF)",
+                          LF: "Long Form (LF)",
+                          SQF: "Square Form (SQF)",
+                          BSF: "Beta Short Form (BSF)",
+                          HP: "Hard Posts (HP)",
+                          SEP: "Snapchat Episodes (SEP)",
+                        };
+                        const checked = (newClient.clientReviewDeliverableTypes ?? []).includes(type);
+                        return (
+                          <label key={type} className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const prev = newClient.clientReviewDeliverableTypes ?? [];
+                                const next = checked
+                                  ? prev.filter((t) => t !== type)
+                                  : [...prev, type];
+                                setNewClient({ ...newClient, clientReviewDeliverableTypes: next });
+                              }}
+                              className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600"
+                            />
+                            <span className="text-xs text-gray-700">{labels[type]}</span>
+                          </label>
+                        );
+                      })}
+                      {(newClient.clientReviewDeliverableTypes ?? []).length === 0 && (
+                        <p className="text-xs text-amber-600 mt-1">⚠ No types selected — all tasks will go to review</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="videographerRequired"
+                    className="text-gray-700"
+                  >
+                    Videographer Required
+                  </Label>
+                  <Select
+                    value={newClient.videographerRequired ?? "no"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        videographerRequired: value,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue placeholder="Select option" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="shootDaysPerMonth"
+                    className="text-gray-700"
+                  >
+                    Shoot Days Per Month
+                  </Label>
+                  <Input
+                    id="shootDaysPerMonth"
+                    type="number"
+                    min={0}
+                    max={99}
+                    placeholder="0"
+                    value={(newClient as any).shootDaysPerMonth ?? ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        shootDaysPerMonth: e.target.value === "" ? "" : Math.max(0, Math.min(99, Number(e.target.value))),
+                      } as any)
+                    }
+                  />
+                  <p className="text-xs text-gray-500">
+                    Tracking only — also drives how many shoot tasks
+                    auto-create for the videographer each month.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="scriptsRequired" className="text-gray-700">
+                    Scripts Required
+                  </Label>
+                  <Select
+                    value={(newClient as any).scriptsRequired ? "yes" : "no"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        scriptsRequired: value === "yes",
+                      } as any)
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue placeholder="Select option" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-500">
+                    Auto-generate a script for every SF/LF deliverable task each month, linked to its raw-footage folder and editor task.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="coverImageRequired"
+                    className="text-gray-700"
+                  >
+                    Cover Image Required
+                  </Label>
+                  <Select
+                    value={newClient.coverImageRequired ?? "no"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        coverImageRequired: value,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue placeholder="Select option" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="startDate" className="text-gray-700">
+                    Start Date
+                  </Label>
+                  <Input
+                    id="startDate"
+                    type="date"
+                    value={newClient.startDate ?? ""}
+                    onChange={(e) =>
+                      setNewClient({ ...newClient, startDate: e.target.value })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="renewalDate" className="text-gray-700">
+                    Renewal Date
+                  </Label>
+                  <Input
+                    id="renewalDate"
+                    type="date"
+                    value={newClient.renewalDate ?? ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        renewalDate: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <Separator className="bg-gray-200" />
+
+            {/* Monthly Deliverables */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-gray-900 flex items-center gap-2">
+                    <Repeat className="h-5 w-5" />
+                    Monthly Deliverables
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    Set up recurring deliverables that auto-generate tasks
+                  </p>
+                </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    // Reset the deliverable form
+                    setNewDeliverable({
+                      type: "Short Form Videos",
+                      quantity: 0,
+                      videosPerDay: 1,
+                      platforms: [],
+                      postingSchedule: "weekly",
+                      postingDays: [],
+                      postingTimes: ["10:00 AM"],
+                      description: "",
+                    });
+                    setEditingDeliverableId(null); // 🔥 Clear editing state
+                    setDeliverableDialogKey((prev) => prev + 1); // Force remount
+                    setShowAddDeliverableDialog(true);
+                  }}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Deliverable
+                </Button>
+              </div>
+
+              <DragDropContext onDragEnd={handleDeliverableDragEnd}>
+                <Droppable droppableId="deliverables-list">
+                  {(provided) => (
+                    <div
+                      {...provided.droppableProps}
+                      ref={provided.innerRef}
+                      className="space-y-2"
+                    >
+                      {(newClient.monthlyDeliverables || []).map((deliverable, index) => (
+                        <Draggable
+                          key={deliverable.id}
+                          draggableId={deliverable.id}
+                          index={index}
+                        >
+                          {(provided, snapshot) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              className={`p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-start justify-between ${snapshot.isDragging ? "shadow-lg ring-2 ring-blue-500 bg-white" : ""
+                                }`}
+                            >
+                              {/* Drag Handle */}
+                              <div
+                                {...provided.dragHandleProps}
+                                className="flex items-center justify-center p-1 mr-2 cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-600"
+                              >
+                                <GripVertical className="h-5 w-5" />
+                              </div>
+
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  {getDeliverableTypeIcon(deliverable.type)}
+                                  <span className="text-gray-900">
+                                    {deliverable.type}
+                                  </span>
+                                  <Badge variant="outline" className="text-gray-600">
+                                    {deliverable.quantity} per month
+                                  </Badge>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-blue-600 bg-blue-50"
+                                  >
+                                    {deliverable.videosPerDay || 1} per day
+                                  </Badge>
+                                </div>
+                                <div className="text-sm text-gray-600 mb-1">
+                                  {deliverable.postingSchedule} •{" "}
+                                  {deliverable.postingDays &&
+                                    deliverable.postingDays.length > 0
+                                    ? deliverable.postingDays.join(", ")
+                                    : "Various days"}{" "}
+                                  • {formatPostingTimesDisplay(deliverable.postingTimes)}
+                                </div>
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {deliverable.platforms.map((platform) => (
+                                    <Badge
+                                      key={platform}
+                                      variant="outline"
+                                      className={`text-xs ${getPlatformBadgeColor(
+                                        platform
+                                      )}`}
+                                    >
+                                      {platform}
+                                    </Badge>
+                                  ))}
+                                </div>
+                                <div className="description text-xs text-gray-500 mt-2">
+                                  {deliverable.description && (
+                                    <p className="text-xs text-gray-500 mt-2">
+                                      {deliverable.description}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                              {/* Edit and Delete buttons */}
+                              <div className="flex gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleEditDeliverable(deliverable)}
+                                  className="text-blue-600 hover:text-blue-700"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleRemoveDeliverable(deliverable.id)}
+                                  className="text-red-600 hover:text-red-700"
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </Draggable>
+                      ))}
+                      {provided.placeholder}
+
+                      {(!newClient.monthlyDeliverables ||
+                        newClient.monthlyDeliverables.length === 0) && (
+                          <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-lg border border-gray-200">
+                            No monthly deliverables added yet
+                          </div>
+                        )}
+                    </div>
+                  )}
+                </Droppable>
+              </DragDropContext>
+            </div>
+
+            <Separator className="bg-gray-200" />
+
+            {/* One-Off Projects */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-gray-900 flex items-center gap-2">
+                    <Zap className="h-5 w-5 text-yellow-500" />
+                    One-Off Projects / Packages
+                  </h3>
+                  <p className="text-sm text-gray-600">
+                    One-time projects or task bundles
+                  </p>
+                </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setNewDeliverable({
+                      type: "Short Form Videos",
+                      quantity: 1,
+                      videosPerDay: 1,
+                      platforms: [],
+                      postingSchedule: "one-off",
+                      postingDays: [],
+                      postingTimes: ["10:00 AM"],
+                      description: "",
+                    });
+                    setEditingDeliverableId(null);
+                    setShowAddDeliverableDialog(true);
+                  }}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Project
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                {(newClient.oneOffDeliverables || []).map((deliverable) => (
+                  <div
+                    key={deliverable.id}
+                    className="p-3 bg-gray-50 rounded-lg border border-gray-200 flex items-start justify-between"
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        {getDeliverableTypeIcon(deliverable.type)}
+                        <span className="text-gray-900 font-medium">
+                          {deliverable.type}
+                        </span>
+                        <Badge variant="outline" className="text-gray-600">
+                          {deliverable.quantity} Total
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {deliverable.platforms.join(", ")}
+                      </div>
+                    </div>
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setNewDeliverable({
+                            type: deliverable.type,
+                            quantity: deliverable.quantity,
+                            videosPerDay: deliverable.videosPerDay,
+                            platforms: deliverable.platforms,
+                            postingSchedule: deliverable.postingSchedule as PostingSchedule,
+                            postingDays: deliverable.postingDays,
+                            postingTimes: deliverable.postingTimes,
+                            description: deliverable.description
+                          });
+                          setEditingDeliverableId(deliverable.id);
+                          setShowAddDeliverableDialog(true);
+                        }}
+                        className="text-blue-600 hover:text-blue-700"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleRemoveDeliverable(deliverable.id)}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+
+                {(!newClient.oneOffDeliverables ||
+                  newClient.oneOffDeliverables.length === 0) && (
+                    <div className="text-center py-6 text-gray-400 bg-gray-50/50 rounded-lg border border-dashed border-gray-200">
+                      No one-off projects added
+                    </div>
+                  )}
+              </div>
+            </div>
+
+            <Separator className="bg-gray-200" />
+
+            {/* Template Hashtags */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-gray-900 flex items-center gap-2">
+                  <Hash className="h-5 w-5 text-blue-500" />
+                  Template Hashtags
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Default hashtags for this client — selectable in the review screen when approving posts. The client can add more from their portal.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={hashtagInput}
+                  onChange={(e) => setHashtagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTemplateHashtag();
+                    }
+                  }}
+                  placeholder="e.g. contentcreation"
+                  className="bg-white border-gray-200 text-gray-900"
+                />
+                <Button type="button" variant="outline" onClick={addTemplateHashtag}>
+                  Add
+                </Button>
+              </div>
+              {(newClient.templateHashtags || []).length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {(newClient.templateHashtags || []).map((tag) => (
+                    <Badge
+                      key={tag}
+                      variant="secondary"
+                      className="gap-1.5 pr-1.5 bg-blue-50 text-blue-700 border-blue-200"
+                    >
+                      {tag}
+                      <button
+                        type="button"
+                        onClick={() => removeTemplateHashtag(tag)}
+                        className="text-blue-400 hover:text-blue-700"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Separator className="bg-gray-200" />
+
+            {/* Payment & Billing — notes only; real monthly invoices use Auto-Invoice Settings */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-gray-900 flex items-center gap-2">
+                  <DollarSign className="h-5 w-5" />
+                  Payment & Billing (notes only)
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Internal notes for this client. To actually send monthly invoices, use the
+                  &quot;Auto-Invoice Settings&quot; button on the clients list.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="monthlyFee" className="text-gray-700">
+                    Monthly Fee ($)
+                  </Label>
+                  <Input
+                    id="monthlyFee"
+                    type="number"
+                    placeholder="5000"
+                    value={newClient.billing?.monthlyFee || ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: e.target.value,
+                          billingFrequency:
+                            newClient.billing?.billingFrequency || "monthly",
+                          billingDay: newClient.billing?.billingDay || 1,
+                          paymentMethod:
+                            newClient.billing?.paymentMethod || "credit-card",
+                          nextBillingDate:
+                            newClient.billing?.nextBillingDate || "",
+                        },
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="billingFrequency" className="text-gray-700">
+                    Billing Frequency
+                  </Label>
+                  <Select
+                    value={newClient.billing?.billingFrequency || "monthly"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: newClient.billing?.monthlyFee || "",
+                          billingFrequency: value as
+                            | "monthly"
+                            | "quarterly"
+                            | "annually",
+                          billingDay: newClient.billing?.billingDay || 1,
+                          paymentMethod:
+                            newClient.billing?.paymentMethod || "credit-card",
+                          nextBillingDate:
+                            newClient.billing?.nextBillingDate || "",
+                        },
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monthly">Monthly</SelectItem>
+                      <SelectItem value="quarterly">Quarterly</SelectItem>
+                      <SelectItem value="annually">Annually</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="billingDay" className="text-gray-700">
+                    Billing Day of Month
+                  </Label>
+                  <Select
+                    value={String(newClient.billing?.billingDay || 1)}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: newClient.billing?.monthlyFee || "",
+                          billingFrequency:
+                            newClient.billing?.billingFrequency || "monthly",
+                          billingDay: parseInt(value),
+                          paymentMethod:
+                            newClient.billing?.paymentMethod || "credit-card",
+                          nextBillingDate:
+                            newClient.billing?.nextBillingDate || "",
+                        },
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 28 }, (_, i) => i + 1).map(
+                        (day) => (
+                          <SelectItem key={day} value={String(day)}>
+                            {day}
+                            {day === 1
+                              ? "st"
+                              : day === 2
+                                ? "nd"
+                                : day === 3
+                                  ? "rd"
+                                  : "th"}{" "}
+                            of the month
+                          </SelectItem>
+                        )
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="paymentMethod" className="text-gray-700">
+                    Payment Method
+                  </Label>
+                  <Select
+                    value={newClient.billing?.paymentMethod || "credit-card"}
+                    onValueChange={(value) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: newClient.billing?.monthlyFee || "",
+                          billingFrequency:
+                            newClient.billing?.billingFrequency || "monthly",
+                          billingDay: newClient.billing?.billingDay || 1,
+                          paymentMethod: value as
+                            | "credit-card"
+                            | "bank-transfer"
+                            | "check"
+                            | "paypal",
+                          nextBillingDate:
+                            newClient.billing?.nextBillingDate || "",
+                        },
+                      })
+                    }
+                  >
+                    <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="credit-card">
+                        <span className="flex items-center gap-2">
+                          <CreditCard className="h-4 w-4" />
+                          Credit Card
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="bank-transfer">
+                        Bank Transfer
+                      </SelectItem>
+                      <SelectItem value="paypal">PayPal</SelectItem>
+                      <SelectItem value="check">Check</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="nextBillingDate" className="text-gray-700">
+                    Next Billing Date
+                  </Label>
+                  <Input
+                    id="nextBillingDate"
+                    type="date"
+                    value={newClient.billing?.nextBillingDate || ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: newClient.billing?.monthlyFee || "",
+                          billingFrequency:
+                            newClient.billing?.billingFrequency || "monthly",
+                          billingDay: newClient.billing?.billingDay || 1,
+                          paymentMethod:
+                            newClient.billing?.paymentMethod || "credit-card",
+                          nextBillingDate: e.target.value,
+                        },
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                <div className="space-y-2 col-span-2">
+                  <Label htmlFor="billingNotes" className="text-gray-700">
+                    Billing Notes (Optional)
+                  </Label>
+                  <Textarea
+                    id="billingNotes"
+                    placeholder="e.g., Includes 12 videos per month, 10% discount applied"
+                    value={newClient.billing?.notes || ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        billing: {
+                          ...newClient.billing,
+                          monthlyFee: newClient.billing?.monthlyFee || "",
+                          billingFrequency:
+                            newClient.billing?.billingFrequency || "monthly",
+                          billingDay: newClient.billing?.billingDay || 1,
+                          paymentMethod:
+                            newClient.billing?.paymentMethod || "credit-card",
+                          nextBillingDate:
+                            newClient.billing?.nextBillingDate || "",
+                          notes: e.target.value,
+                        },
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                    rows={3}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Slack Channel Notifications */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-gray-900 flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5 text-purple-600" />
+                  Slack Channel Notifications
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Send this client&apos;s task notifications to a dedicated Slack channel
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="slackWebhookUrl" className="text-gray-700">
+                    Webhook URL
+                  </Label>
+                  <Input
+                    id="slackWebhookUrl"
+                    placeholder="https://hooks.slack.com/services/..."
+                    value={(newClient as any).slackWebhookUrl || ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        slackWebhookUrl: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="slackChannelName" className="text-gray-700">
+                    Channel Name
+                  </Label>
+                  <Input
+                    id="slackChannelName"
+                    placeholder="#e8-client-name"
+                    value={(newClient as any).slackChannelName || ""}
+                    onChange={(e) =>
+                      setNewClient({
+                        ...newClient,
+                        slackChannelName: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <Label className="text-gray-700">Enable Slack Notifications</Label>
+                  <p className="text-sm text-gray-500">
+                    Task updates for this client will be posted to their Slack channel
+                  </p>
+                </div>
+                <Switch
+                  checked={(newClient as any).slackEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    setNewClient({
+                      ...newClient,
+                      slackEnabled: checked,
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            {/* Contracts & Invoices Section - Only show when editing existing client */}
+            {editingClient && (
+              <>
+                <Separator className="my-6" />
+                <ClientContractsInvoices
+                  clientId={editingClient.id}
+                  clientName={editingClient.name}
+                  clientEmail={editingClient.email}
+                  companyName={editingClient.companyName}
+                  deliverables={newClient.monthlyDeliverables || []}
+                  monthlyFee={newClient.billing?.monthlyFee}
+                  hasPostingServices={newClient.hasPostingServices ?? true}
+                />
+                <Separator className="my-6" />
+                <ClientExpenseTracker clientId={editingClient.id} />
+              </>
+            )}
+            {/* )} */}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowAddDialog(false);
+                setEditingClient(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSaveClient}>
+              {editingClient ? "Update Client" : "Add Client"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add/Edit Deliverable Dialog */}
+      <Dialog
+        key={deliverableDialogKey}
+        open={showAddDeliverableDialog}
+        onOpenChange={(open) => {
+          setShowAddDeliverableDialog(open);
+          if (!open) {
+            // Reset form when closing
+            setEditingDeliverableId(null); // 🔥 Clear editing state
+            setNewDeliverable({
+              type: "Short Form Videos",
+              quantity: 1,
+              videosPerDay: 1,
+              platforms: [],
+              postingSchedule: "weekly",
+              postingDays: [],
+              postingTimes: ["10:00 AM"],
+              description: "",
+              isTrial: false,
+            });
+          }
+        }}
+      >
+        <DialogContent className="!max-w-[1200px] w-[90vw] !max-h-[90vh] overflow-y-auto bg-white border-gray-200">
+          <DialogHeader>
+            <DialogTitle className="text-gray-900">
+              {/* 🔥 Dynamic title based on edit mode */}
+              {editingDeliverableId
+                ? (newDeliverable.postingSchedule === 'one-off' ? "Edit One-Off Deliverable" : "Edit Monthly Deliverable")
+                : (newDeliverable.postingSchedule === 'one-off' ? "Add One-Off Deliverable" : "Add Monthly Deliverable")}
+            </DialogTitle>
+            <DialogDescription className="text-gray-600">
+              {editingDeliverableId
+                ? "Update the configuration"
+                : (newDeliverable.postingSchedule === 'one-off' ? "Configure a one-off project or task bundle" : "Configure a recurring deliverable for this client")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Deliverable Type and Quantity per Month - Side by Side */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="deliverableType" className="text-gray-700">
+                  Deliverable Type
+                </Label>
+                <Select
+                  value={newDeliverable.type}
+                  onValueChange={(value: string) => {
+                    const newType = value as DeliverableType;
+                    console.log("🎯 Setting type to:", newType);
+                    setNewDeliverable({
+                      ...newDeliverable,
+                      type: newType,
+                    });
+                    console.log("🎯 State after update should be:", newType);
+                  }}
+                >
+                  <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                    <SelectValue placeholder="Select deliverable type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Short Form Videos">
+                      Short Form (SF)
+                    </SelectItem>
+                    <SelectItem value="Long Form Videos">
+                      Long Form (LF)
+                    </SelectItem>
+                    <SelectItem value="Square Form Videos">
+                      Square Form Videos (SQF)
+                    </SelectItem>
+                    <SelectItem value="Thumbnails">
+                      Thumbnails (THUMB)
+                    </SelectItem>
+                    <SelectItem value="Tiles">Tiles (T)</SelectItem>
+                    <SelectItem value="Hard Posts / Graphic Images">
+                      Hard Posts / Graphic Images (HP)
+                    </SelectItem>
+                    <SelectItem value="Snapchat Episodes">
+                      Snapchat Episodes (SEP)
+                    </SelectItem>
+                    <SelectItem value="Beta Short Form">
+                      Beta Short Form (BSF)
+                    </SelectItem>
+                    <SelectItem value="Stories">
+                      Stories (ST)
+                    </SelectItem>
+                    <SelectItem value="Text Post">
+                      Text Post (TP)
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="quantity" className="text-gray-700">
+                  {newDeliverable.postingSchedule === 'one-off' ? "Total Quantity" : "Quantity per Month"}
+                </Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  min="1"
+                  value={newDeliverable.quantity}
+                  onChange={(e) =>
+                    setNewDeliverable({
+                      ...newDeliverable,
+                      quantity: parseInt(e.target.value) || 1,
+                    })
+                  }
+                  className="bg-white border-gray-200 text-gray-900 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </div>
+            </div>
+
+            {/* Posts Per Day and Posting Schedule - Side by Side */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="videosPerDay" className="text-gray-700">
+                  Posts Per Day
+                </Label>
+                <Input
+                  id="videosPerDay"
+                  type="number"
+                  min="1"
+                  value={newDeliverable.videosPerDay}
+                  disabled={newClient.hasPostingServices === false}
+                  onChange={(e) =>
+                    syncPostingTimesWithVideosPerDay(
+                      parseInt(e.target.value) || 1
+                    )
+                  }
+                  className="bg-white border-gray-200 text-gray-900 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="postingSchedule" className="text-gray-700">
+                  Posting Schedule
+                </Label>
+                <Select
+                  value={newDeliverable.postingSchedule}
+                  disabled={newClient.hasPostingServices === false}
+                  onValueChange={(value) =>
+                    setNewDeliverable({
+                      ...newDeliverable,
+                      postingSchedule: value as PostingSchedule,
+                    })
+                  }
+                >
+                  <SelectTrigger className="bg-white border-gray-200 text-gray-900">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                    <SelectItem value="bi-weekly">Bi-Weekly</SelectItem>
+                    <SelectItem value="monthly">Monthly</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                    <SelectItem value="one-off">One-Off (Single Batch)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-gray-700">Posting Days</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={setEveryDay}
+                  disabled={newClient.hasPostingServices === false}
+                  className={`h-8 ${(newDeliverable.postingDays || []).length === 7
+                    ? "bg-blue-50 border-blue-500 text-blue-700"
+                    : "bg-white border-gray-200 text-gray-600"
+                    }`}
+                >
+                  {(newDeliverable.postingDays || []).length === 7 ? "✓ " : ""}
+                  Everyday
+                </Button>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  "Monday",
+                  "Tuesday",
+                  "Wednesday",
+                  "Thursday",
+                  "Friday",
+                  "Saturday",
+                  "Sunday",
+                ].map((day) => (
+                  <div
+                    key={day}
+                    onClick={() => newClient.hasPostingServices !== false && toggleDay(day)}
+                    className={`p-2 rounded border text-center text-sm transition-colors ${newClient.hasPostingServices === false ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${(newDeliverable.postingDays || []).includes(day)
+                      ? "bg-blue-50 border-blue-500 text-blue-700"
+                      : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                      }`}
+                  >
+                    {day.substring(0, 3)}
+                  </div>
+                ))}
+              </div>
+              {(newDeliverable.postingDays || []).length > 0 && (
+                <p className="text-xs text-gray-500">
+                  Selected: {(newDeliverable.postingDays || []).join(", ")}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <Label className="text-gray-700">
+                Posting Times ({newDeliverable.videosPerDay || 1} video
+                {(newDeliverable.videosPerDay || 1) > 1 ? "s" : ""} per day)
+              </Label>
+              <div className="grid grid-cols-2 gap-3">
+                {Array.from({ length: newDeliverable.videosPerDay || 1 }).map(
+                  (_, index) => {
+                    const timeStr = (newDeliverable.postingTimes || ["10:00 AM"])[index] || "10:00 AM";
+                    const parsed = parsePostingTime(timeStr);
+                    return (
+                      <div key={index} className="space-y-1">
+                        <Label
+                          htmlFor={`postingTime-${index}`}
+                          className="text-xs text-gray-600"
+                        >
+                          Video {index + 1} Time
+                        </Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id={`postingTime-${index}`}
+                            type="text"
+                            placeholder="10:30"
+                            value={`${parsed.hours}:${parsed.minutes}`}
+                            disabled={newClient.hasPostingServices === false}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              // Allow typing digits and colon only
+                              if (/^[0-9:]*$/.test(val) && val.length <= 5) {
+                                const parts = val.split(':');
+                                const hours = parts[0] || parsed.hours;
+                                // Keep minutes as typed (don't pad while typing)
+                                const minutes = parts.length > 1 ? parts[1] : parsed.minutes;
+                                // Store raw value - will normalize on blur
+                                const currentTimes = newDeliverable.postingTimes || ["10:00 AM"];
+                                const newTimes = [...currentTimes];
+                                newTimes[index] = `${hours}:${minutes} ${parsed.period}`;
+                                setNewDeliverable({ ...newDeliverable, postingTimes: newTimes });
+                              }
+                            }}
+                            onBlur={(e) => {
+                              // Normalize on blur - ensure proper format with AM/PM
+                              const parts = e.target.value.split(':');
+                              let h = parseInt(parts[0], 10) || 10;
+                              let m = parseInt(parts[1], 10) || 0;
+                              if (h < 1) h = 1;
+                              if (h > 12) h = 12;
+                              if (m < 0) m = 0;
+                              if (m > 59) m = 59;
+                              updatePostingTime(index, buildPostingTime(String(h), String(m).padStart(2, '0'), parsed.period));
+                            }}
+                            className="bg-white border-gray-200 text-gray-900 w-[80px]"
+                          />
+                          <Select
+                            value={parsed.period}
+                            disabled={newClient.hasPostingServices === false}
+                            onValueChange={(val: string) => {
+                              updatePostingTime(index, buildPostingTime(parsed.hours, parsed.minutes, val));
+                            }}
+                          >
+                            <SelectTrigger className="w-[80px] bg-white border-gray-200 text-gray-900">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="AM">AM</SelectItem>
+                              <SelectItem value="PM">PM</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    );
+                  }
+                )}
+              </div>
+              {(newDeliverable.videosPerDay || 1) > 1 && (
+                <p className="text-xs text-gray-500">
+                  Times: {formatPostingTimesDisplay(newDeliverable.postingTimes)}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-gray-700">Platforms</Label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={setAllPlatforms}
+                  disabled={newClient.hasPostingServices === false}
+                  className={`h-8 ${(newDeliverable.platforms || []).length === 7
+                    ? "bg-blue-50 border-blue-500 text-blue-700"
+                    : "bg-white border-gray-200 text-gray-600"
+                    }`}
+                >
+                  {(newDeliverable.platforms || []).length === 7 ? "✓ " : ""}
+                  Select All
+                </Button>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {(
+                  [
+                    "Instagram",
+                    "TikTok",
+                    "Facebook",
+                    "YouTube",
+                    "Twitter",
+                    "LinkedIn",
+                    "Snapchat",
+                  ] as SocialPlatform[]
+                ).map((platform) => (
+                  <div
+                    key={platform}
+                    onClick={() => newClient.hasPostingServices !== false && togglePlatform(platform)}
+                    className={`p-2 rounded border text-center text-sm transition-colors flex items-center justify-center gap-2 ${newClient.hasPostingServices === false ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${newDeliverable.platforms?.includes(platform)
+                      ? "bg-blue-50 border-blue-500 text-blue-700"
+                      : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                      }`}
+                  >
+                    {getPlatformIcon(platform)}
+                    <span>
+                      {platform.charAt(0).toUpperCase() + platform.slice(1)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="description" className="text-gray-700">
+                Description (optional)
+              </Label>
+              <Textarea
+                id="description"
+                value={newDeliverable.description}
+                onChange={(e) =>
+                  setNewDeliverable({
+                    ...newDeliverable,
+                    description: e.target.value,
+                  })
+                }
+                placeholder="Additional notes about this deliverable..."
+                className="bg-white border-gray-200 text-gray-900"
+                rows={3}
+              />
+            </div>
+
+            {/* Trial Reel Toggle */}
+            <div className="flex items-center justify-between p-4 bg-amber-50/50 rounded-lg border border-amber-200/50">
+              <div className="flex items-center gap-3">
+                <Zap className="h-4 w-4 text-amber-600" />
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Trial Reels</p>
+                  <p className="text-xs text-gray-500">
+                    Mark all tasks from this deliverable as trial reels
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={newDeliverable.isTrial ?? false}
+                onCheckedChange={(checked) =>
+                  setNewDeliverable({
+                    ...newDeliverable,
+                    isTrial: checked,
+                  })
+                }
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowAddDeliverableDialog(false)}
+            >
+              Cancel
+            </Button>
+            {/* 🔥 Dynamic button text based on edit mode */}
+            <Button onClick={handleAddDeliverable}>
+              {editingDeliverableId ? "Update Deliverable" : "Add Deliverable"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Client Details Dialog */}
+      <ClientDetailsDialog />
+
+      {/* Auto-Invoice Settings Dialog — simple monthly billing per client */}
+      <Dialog open={showAutoInvoiceDialog} onOpenChange={setShowAutoInvoiceDialog}>
+        <DialogContent className="!max-w-none w-[min(1100px,92vw)] max-h-[90vh] overflow-y-auto bg-white border-gray-200">
+          <DialogHeader>
+            <DialogTitle>Monthly Auto-Invoices</DialogTitle>
+            <DialogDescription className="space-y-1">
+              <span className="block">
+                Turn on monthly invoices for a client, set the dollar amount and next bill date, then Save.
+              </span>
+              <span className="block text-gray-500">
+                Invoices are emailed automatically on the bill date. Unpaid clients are locked after the grace period (days until due).
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap items-center gap-2 pb-2">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search clients..."
+                value={autoInvoiceSearch}
+                onChange={(e) => setAutoInvoiceSearch(e.target.value)}
+                className="pl-10 bg-secondary/30 h-10 border-transparent focus-visible:ring-1 focus-visible:ring-primary/20 transition-all rounded-full"
+              />
+            </div>
+            <div className="flex gap-1">
+              {([
+                ["all", "All"],
+                ["on", "On only"],
+                ["tomorrow", "Due tomorrow"],
+                ["due", "Due now"],
+              ] as const).map(([key, label]) => (
+                <Button
+                  key={key}
+                  type="button"
+                  size="sm"
+                  variant={autoInvoiceFilter === key ? "default" : "outline"}
+                  onClick={() => setAutoInvoiceFilter(key)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          {dueTomorrowRows.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <strong>{dueTomorrowRows.length}</strong> invoice(s) are set to send tomorrow.
+              Review amounts below (filter: Due tomorrow). Auto-send still runs if nothing is changed.
+            </div>
+          )}
+
+          {autoInvoiceLoading ? (
+            <div className="py-12 text-center text-gray-500">Loading clients...</div>
+          ) : filteredAutoInvoiceRows.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">No clients match this view.</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="hidden md:grid grid-cols-[2fr_1.1fr_1.8fr_1fr_1.2fr_auto] gap-3 px-3 text-xs font-medium text-gray-500 uppercase">
+                <div>Client</div>
+                <div>Monthly $</div>
+                <div>What the invoice says</div>
+                <div>Grace (days)</div>
+                <div>Next bill date</div>
+                <div>On</div>
+              </div>
+
+              {filteredAutoInvoiceRows.map((row) => (
+                <div
+                  key={row.clientId}
+                  className={`grid grid-cols-1 md:grid-cols-[2fr_1.1fr_1.8fr_1fr_1.2fr_auto] gap-3 items-center px-3 py-3 border rounded-lg bg-white ${
+                    row._dirty ? "border-amber-300 bg-amber-50/40" : "border-gray-200"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-gray-900 truncate">
+                      {row.companyName || row.name}
+                      {row._dirty && (
+                        <span className="ml-2 text-[10px] uppercase text-amber-700">unsaved</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">{row.email || "No email"}</div>
+                    {row.hasActiveSubscription && (
+                      <div className="text-[11px] text-amber-700 mt-0.5">
+                        Has a live Stripe subscription — auto-invoice will skip to avoid double billing
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <DollarSign className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="0.00"
+                      value={row.recurringAmount ?? ""}
+                      onChange={(e) =>
+                        updateAutoInvoiceRow(row.clientId, {
+                          recurringAmount:
+                            e.target.value === "" ? null : parseFloat(e.target.value),
+                        })
+                      }
+                      className="pl-7 bg-white border-gray-200 text-gray-900"
+                    />
+                  </div>
+
+                  <Input
+                    placeholder="e.g. Monthly retainer"
+                    value={row.recurringDescription}
+                    onChange={(e) =>
+                      updateAutoInvoiceRow(row.clientId, {
+                        recurringDescription: e.target.value,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={90}
+                    title="Days the client has to pay before the portal can lock"
+                    value={row.dueDays}
+                    onChange={(e) =>
+                      updateAutoInvoiceRow(row.clientId, {
+                        dueDays: parseInt(e.target.value || "0", 10),
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+
+                  <Input
+                    type="date"
+                    value={toDateInputValueLocal(row.nextBillingDate)}
+                    onChange={(e) =>
+                      updateAutoInvoiceRow(row.clientId, {
+                        nextBillingDate: e.target.value || null,
+                      })
+                    }
+                    className="bg-white border-gray-200 text-gray-900"
+                  />
+
+                  <div className="flex justify-start md:justify-center">
+                    <Switch
+                      checked={row.autoInvoiceActive}
+                      onCheckedChange={(checked) =>
+                        updateAutoInvoiceRow(row.clientId, { autoInvoiceActive: checked })
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-start gap-3 pt-3 border-t border-gray-100">
+            <div className="flex-1 min-w-[240px] space-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={runReviewReminderNow}
+                disabled={runningReviewReminder || autoInvoiceLoading}
+                className="gap-2"
+              >
+                <AlertCircle className="h-3.5 w-3.5" />
+                {runningReviewReminder ? "Sending..." : "Send day-before review alert now"}
+              </Button>
+              <p className="text-xs text-gray-500">
+                Slack/email Eric with tomorrow&apos;s planned invoices (does not send client invoices).
+              </p>
+            </div>
+            <div className="flex-1 min-w-[240px] space-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={openInvoiceConfirm}
+                disabled={runningInvoiceNow || autoInvoiceLoading}
+                className="gap-2"
+              >
+                <DollarSign className="h-3.5 w-3.5" />
+                Preview &amp; send due invoices
+              </Button>
+              {runInvoiceResult && (
+                <p className="text-xs text-gray-500">{runInvoiceResult}</p>
+              )}
+              {dirtyAutoInvoiceCount > 0 && (
+                <p className="text-xs text-amber-700">
+                  {dirtyAutoInvoiceCount} unsaved change(s) — save before sending.
+                </p>
+              )}
+            </div>
+            <div className="flex-1 min-w-[240px] space-y-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={runLockNow}
+                disabled={runningLockNow}
+                className="gap-2"
+              >
+                <AlertCircle className="h-3.5 w-3.5" />
+                {runningLockNow ? "Checking..." : "Lock overdue clients now"}
+              </Button>
+              {runLockResult && (
+                <p className="text-xs text-gray-500">{runLockResult}</p>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowAutoInvoiceDialog(false)}
+              disabled={autoInvoiceSaving}
+            >
+              Close
+            </Button>
+            <Button
+              onClick={saveAutoInvoiceSettings}
+              disabled={autoInvoiceLoading || autoInvoiceSaving || dirtyAutoInvoiceCount === 0}
+            >
+              {autoInvoiceSaving
+                ? "Saving..."
+                : dirtyAutoInvoiceCount > 0
+                  ? `Save ${dirtyAutoInvoiceCount} change(s)`
+                  : "Saved"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm send invoices after dry-run preview */}
+      <Dialog open={showInvoiceConfirm} onOpenChange={setShowInvoiceConfirm}>
+        <DialogContent className="bg-white max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Send invoices now?</DialogTitle>
+            <DialogDescription>
+              This emails Stripe invoices to every client whose bill date is today or earlier.
+            </DialogDescription>
+          </DialogHeader>
+          {invoicePreview.loading ? (
+            <div className="py-6 text-center text-gray-500">Checking who is due...</div>
+          ) : (
+            <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+              <p className="text-sm text-gray-700">{invoicePreview.message}</p>
+              {(invoicePreview.results || []).length === 0 ? (
+                <p className="text-sm text-gray-500">Nobody is due right now.</p>
+              ) : (
+                <ul className="space-y-2 text-sm">
+                  {(invoicePreview.results || []).map((r) => (
+                    <li
+                      key={r.clientId}
+                      className="flex justify-between gap-3 border border-gray-100 rounded-md px-3 py-2"
+                    >
+                      <span className="font-medium text-gray-900">{r.clientName}</span>
+                      <span className="text-gray-600 text-right">
+                        {r.status === "would_invoice"
+                          ? `Would bill $${((r.amountCents || 0) / 100).toFixed(2)}`
+                          : `${r.status}${r.reason ? ` — ${r.reason}` : ""}`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowInvoiceConfirm(false)} disabled={runningInvoiceNow}>
+              Cancel
+            </Button>
+            <Button
+              onClick={runInvoiceNow}
+              disabled={
+                runningInvoiceNow ||
+                invoicePreview.loading ||
+                !(invoicePreview.results || []).some((r) => r.status === "would_invoice")
+              }
+            >
+              {runningInvoiceNow ? "Sending..." : "Yes, send invoices"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </TabsContent>
+
+      <TabsContent value="pre-clients" className="mt-0">
+        <PreClientsTab />
+      </TabsContent>
+
+      </Tabs>
+    </div>
+  );
+}

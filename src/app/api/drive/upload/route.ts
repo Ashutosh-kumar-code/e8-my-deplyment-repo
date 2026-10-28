@@ -1,0 +1,148 @@
+export const dynamic = 'force-dynamic';
+// src/app/api/drive/upload/route.ts
+
+// Returns a presigned URL — browser uploads directly to R2, main EC2 never touches the bytes
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getDbHttp } from '@/lib/db';
+import { client as clientTable, user as userTable } from '@/lib/db/schema';
+import { eq, or } from 'drizzle-orm';
+import { presignUpload } from '@/lib/file-server';
+import { sendDriveUploadNotification } from '@/lib/upload-notifications';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { keepAlive } from '@/lib/keep-alive';
+import { getCurrentUser2 } from '@/lib/auth';
+import { recordPendingUpload } from '@/lib/drive/index-store';
+
+function getCurrentMonthFolder(): string {
+  const date = new Date();
+  const month = date.toLocaleDateString('en-US', { month: 'long' });
+  const year = date.getFullYear();
+  return `${month}-${year}`;
+}
+
+export async function POST(request: NextRequest) {
+  const db = getDbHttp();
+  const { env } = getCloudflareContext();
+  try {
+    // 🔒 This route had no login check: anyone could get a presigned PUT for
+    // ANY key in the bucket (i.e. overwrite any file). Nothing in the app
+    // calls it any more — uploads go through /api/upload/initiate — but it
+    // was still live, so it now requires a session like everything else.
+    const currentUser = await getCurrentUser2(request);
+    if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const contentType = request.headers.get('content-type') || '';
+
+    // ── Mode 1: JSON presign request (new flow) ──────────────────────────────
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      const { fileName, folderPath, contentType: fileType } = body;
+      // Identity comes from the session, never the request body.
+      const userId = String(currentUser.id);
+      const role = currentUser.role as string;
+
+      if (!fileName || !folderPath) {
+        return NextResponse.json({ error: 'fileName and folderPath are required' }, { status: 400 });
+      }
+
+      const s3Key = await resolveS3Key(fileName, folderPath, userId, role);
+      const { uploadUrl, fileUrl } = await presignUpload(env, userId || 0, role || 'admin', s3Key, fileType || 'application/octet-stream');
+      keepAlive(recordPendingUpload(s3Key, userId ? parseInt(userId, 10) || null : null, fileType));
+
+      return NextResponse.json({ presignedUrl: uploadUrl, s3Key, fileUrl });
+    }
+
+    // ── Mode 2: FormData (legacy — still supported) ──────────────────────────
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+    const folderPath = formData.get('folderPath') as string;
+    const userId = String(currentUser.id);
+    const role = currentUser.role as string;
+
+    if (!file) return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+
+    const s3Key = await resolveS3Key(file.name, folderPath, userId, role);
+    const fileType = file.type || 'application/octet-stream';
+    const { uploadUrl, fileUrl } = await presignUpload(env, userId || 0, role || 'admin', s3Key, fileType);
+    keepAlive(recordPendingUpload(s3Key, userId ? parseInt(userId, 10) || null : null, fileType));
+
+    // Send Slack notification
+    const companyName = s3Key.split('/')[0];
+    let matchedClient: { id: string } | null = null;
+    if (companyName) {
+      const [row] = await db
+        .select({ id: clientTable.id })
+        .from(clientTable)
+        .where(or(eq(clientTable.companyName, companyName), eq(clientTable.name, companyName)))
+        .limit(1);
+      matchedClient = row ?? null;
+    }
+
+    if (userId) {
+      keepAlive(
+        sendDriveUploadNotification({
+          fileName: file.name,
+          fileSize: file.size,
+          uploadedBy: parseInt(userId),
+          s3Key,
+          clientId: matchedClient?.id,
+        }).catch(err => console.error('[DriveUpload] Slack notification failed:', err))
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      presignedUrl: uploadUrl,
+      fileUrl,
+      fileName: file.name,
+      s3Key,
+    });
+
+  } catch (error: any) {
+    console.error('❌ Drive upload error:', error);
+    return NextResponse.json({ error: 'Upload failed', details: error.message }, { status: 500 });
+  }
+}
+
+async function resolveS3Key(fileName: string, folderPath: string, userId: string, role: string): Promise<string> {
+  const db = getDbHttp();
+  let basePath = '';
+
+  if (role === 'client') {
+    const foundUser = await db.query.user.findFirst({
+      where: eq(userTable.id, parseInt(userId)),
+      with: { client: { columns: { companyName: true, name: true } } },
+    });
+    if (foundUser?.client) {
+      const companyName = foundUser.client.companyName || foundUser.client.name;
+      basePath = `${companyName}/`;
+    } else {
+      const [clientRecord] = await db
+        .select({ companyName: clientTable.companyName, name: clientTable.name })
+        .from(clientTable)
+        .where(eq(clientTable.userId, parseInt(userId)))
+        .limit(1);
+      if (clientRecord) {
+        basePath = `${clientRecord.companyName || clientRecord.name}/`;
+      }
+    }
+  } else {
+    const pathParts = folderPath.split('/').filter(Boolean);
+    if (pathParts.length > 0) basePath = `${pathParts[0]}/`;
+  }
+
+  if (folderPath.includes('raw-footage')) {
+    const pathAfterRawFootage = folderPath.split('raw-footage/')[1] || '';
+    const hasMonthFolder = /^[A-Z][a-z]+-\d{4}\//.test(pathAfterRawFootage);
+
+    if (hasMonthFolder) {
+      return `${folderPath}${fileName}`;
+    } else {
+      const currentMonth = getCurrentMonthFolder();
+      return `${basePath}raw-footage/${currentMonth}/${fileName}`;
+    }
+  }
+
+  return `${folderPath}${fileName}`;
+}

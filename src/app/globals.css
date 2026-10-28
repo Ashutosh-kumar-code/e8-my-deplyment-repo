@@ -1,0 +1,1006 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 14px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #ffffff;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: #0b0b0f;
+  --foreground: #f2f2f4;
+  --card: #131318;
+  --card-foreground: #f2f2f4;
+  --popover: #1a1a22;
+  --popover-foreground: #f2f2f4;
+  --primary: #8b5cf6;
+  --primary-foreground: #ffffff;
+  --secondary: #1c1c24;
+  --secondary-foreground: #e4e4e7;
+  --muted: #18181f;
+  --muted-foreground: #a1a1aa;
+  --accent: #1f1f28;
+  --accent-foreground: #f2f2f4;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: #16161c;
+  --input-background: #16161c;
+  --switch-background: #2a2a35;
+  --ring: #8b5cf6;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: #8b5cf6;
+  --chart-2: #06b6d4;
+  --chart-3: #22c55e;
+  --chart-4: #f97316;
+  --chart-5: #f43f5e;
+  --sidebar: #0d0d12;
+  --sidebar-foreground: #e4e4e7;
+  --sidebar-primary: #8b5cf6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1a1a22;
+  --sidebar-accent-foreground: #f2f2f4;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: #8b5cf6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+@keyframes gradient-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animated-dark-gradient {
+  background: linear-gradient(135deg, #09090b, #18181b, #1e1b4b, #09090b, #1a1a2e);
+  background-size: 300% 300%;
+  animation: gradient-shift 8s ease infinite;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+}
+
+/**
+ * Base typography. This is not applied to elements which have an ancestor with a Tailwind text class.
+ */
+@layer base {
+  :where(:not(:has([class*=" text-"]), :not(:has([class^="text-"])))) {
+    h1 {
+      font-size: var(--text-3xl);
+      font-weight: 700;
+      letter-spacing: var(--letter-spacing-tight);
+      line-height: var(--line-height-6);
+    }
+
+    h2 {
+      font-size: var(--text-2xl);
+      font-weight: 600;
+      letter-spacing: var(--letter-spacing-tight);
+      line-height: var(--line-height-6);
+    }
+
+    h3 {
+      font-size: var(--text-xl);
+      font-weight: 600;
+      letter-spacing: var(--letter-spacing-tight);
+      line-height: var(--line-height-6);
+    }
+
+    h4 {
+      font-size: var(--text-lg);
+      font-weight: 600;
+      line-height: var(--line-height-6);
+    }
+
+    p {
+      font-size: var(--text-base);
+      font-weight: var(--font-weight-normal);
+      line-height: 1.5;
+    }
+
+    label {
+      font-size: var(--text-base);
+      font-weight: var(--font-weight-medium);
+      line-height: 1.5;
+    }
+
+    button {
+      font-size: var(--text-base);
+      font-weight: var(--font-weight-medium);
+      line-height: 1.5;
+    }
+
+    input {
+      font-size: var(--text-base);
+      font-weight: var(--font-weight-normal);
+      line-height: 1.5;
+    }
+  }
+}
+
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+html {
+  font-size: var(--font-size);
+  /* Radix (DropdownMenu/Select/Dialog) locks body scroll while open, which
+     hides the scrollbar. Without reserving its space, every open/close of
+     one of those (e.g. the "Viewing: X" role switcher, any filter dropdown)
+     shifts the whole page a few px left/right as the scrollbar
+     disappears/reappears. Reserving a stable gutter keeps the layout width
+     constant either way. */
+  scrollbar-gutter: stable;
+}
+
+/* Belt-and-suspenders for the same shift: react-remove-scroll-bar (used
+   internally by every Radix Select/DropdownMenu/Dialog scroll lock) always
+   adds its own compensating `margin-right` to <body data-scroll-locked> —
+   sized to whatever scrollbar gap it measures at that moment — regardless
+   of scrollbar-gutter already reserving that space. That's what was still
+   shifting the FilterSelect pill filters (Editor/QC/Scheduler/... row) and
+   the "Manage" dropdown a few px even with scrollbar-gutter set. Radix's
+   Select has no `modal` prop to disable the lock outright (unlike
+   DropdownMenu), so neutralize the compensation directly. The extra `html`
+   ancestor raises specificity above the library's own `body[data-scroll-locked]`
+   rule so this wins regardless of which <style> tag was inserted later. */
+html body[data-scroll-locked] {
+  margin-right: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Utility classes for search results */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Screen reader only utility */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Hide scrollbar but allow scrolling */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+/* Full-screen modal overrides */
+.fullscreen-dialog {
+  /* Force full-screen positioning */
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Hide default dialog close button */
+.fullscreen-dialog>button:last-child {
+  display: none !important;
+}
+
+/* ================================================
+   Frame.io-Style Review System Theme
+   ================================================ */
+
+/* Review System Dark Theme Variables */
+:root {
+  --review-bg-primary: #000000;
+  --review-bg-secondary: #131316;
+  --review-bg-tertiary: #0a0a0b;
+  --review-bg-elevated: #222225;
+  --review-border: #38383d;
+  --review-border-hover: #505056;
+  --review-text-primary: #ffffff;
+  --review-text-secondary: #8a8a91;
+  --review-text-muted: #6b6b72;
+  --review-accent-purple: #f4f4f5;
+  --review-accent-blue: #8a8a91;
+  --review-accent-cyan: #8a8a91;
+  --review-status-approved: #22c55e;
+  --review-status-changes: #a6303a;
+  --review-status-progress: #8a8a91;
+  --review-status-pending: #505056;
+  --review-comment-marker: #b0b0b5;
+  --review-timeline-bg: #38383d;
+  --review-timeline-progress: #ffffff;
+  --review-timeline-hover: #6b6b72;
+
+  --review-v2-gray-950: #0a0a0b;
+  --review-v2-gray-900: #131316;
+  --review-v2-gray-800: #222225;
+  --review-v2-gray-700: #38383d;
+  --review-v2-gray-600: #505056;
+  --review-v2-gray-500: #6b6b72;
+  --review-v2-gray-400: #8a8a91;
+  --review-v2-gray-300: #b0b0b5;
+  --review-v2-gray-200: #d3d3d6;
+  --review-v2-gray-100: #e7e7e9;
+  --review-v2-gray-50: #f4f4f5;
+  --review-v2-hover-download: #2F5490;
+  --review-v2-hover-info: #8A6A2E;
+  --review-v2-approve: #22c55e;
+  --review-v2-send-back: #a6303a;
+}
+
+/* ================================================
+   E8 Review Screen v2 — strict-neutral dark remap
+   (E8 Design System handoff, Sept 2026)
+
+   Toggled on <body> only while ReviewScreenDesktop is mounted
+   (see its mount/unmount effect) so mobile/thumbnail/script
+   review — which share the --review-* variables above — are
+   completely unaffected. Radix portals (dropdowns, selects)
+   render into document.body, so a body-level class is what lets
+   them pick up the new palette too; a wrapper-scoped class would
+   not reach them.
+   ================================================ */
+body.e8-review-shell {
+  --review-bg-primary: #000000;       /* --color-bg */
+  --review-bg-secondary: #131316;     /* --gray-900 */
+  --review-bg-tertiary: #0a0a0b;      /* --gray-950 */
+  --review-bg-elevated: #222225;      /* --gray-800 */
+  --review-border: #38383d;           /* --gray-700 */
+  --review-border-hover: #505056;     /* --gray-600 */
+  --review-text-primary: #ffffff;
+  --review-text-secondary: #8a8a91;   /* --gray-400 */
+  --review-text-muted: #6b6b72;       /* --gray-500 */
+  --review-accent-purple: #f4f4f5;    /* --gray-50 — repurposed as the neutral "active/selected" fill */
+  --review-accent-blue: #8a8a91;
+  --review-accent-cyan: #8a8a91;
+  --review-status-approved: #2fbf60;  /* approved exception hue */
+  --review-status-changes: #a6303a;   /* send-back exception hue */
+  --review-status-progress: #8a8a91;
+  --review-status-pending: #505056;
+  --review-comment-marker: #b0b0b5;   /* --gray-300 */
+  --review-timeline-bg: #38383d;
+  --review-timeline-progress: #ffffff;
+  --review-timeline-hover: #6b6b72;
+
+  /* Extra tokens the v1 palette has no equivalent for */
+  --review-v2-gray-950: #0a0a0b;
+  --review-v2-gray-900: #131316;
+  --review-v2-gray-800: #222225;
+  --review-v2-gray-700: #38383d;
+  --review-v2-gray-600: #505056;
+  --review-v2-gray-500: #6b6b72;
+  --review-v2-gray-400: #8a8a91;
+  --review-v2-gray-300: #b0b0b5;
+  --review-v2-gray-200: #d3d3d6;
+  --review-v2-gray-100: #e7e7e9;
+  --review-v2-gray-50: #f4f4f5;
+  --review-v2-hover-download: #2F5490;  /* header Download hover fill */
+  --review-v2-hover-info: #8A6A2E;      /* header Details hover fill */
+  --review-v2-approve: #2FBF60;
+  --review-v2-send-back: #A6303A;
+}
+
+/* Component classes that hardcode the old purple rather than reading
+   var(--review-accent-purple) — overridden explicitly while the v2
+   shell class is on <body>. */
+body.e8-review-shell .review-comment-timestamp {
+  font-family: var(--font-sans, inherit);
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  color: var(--review-v2-gray-950);
+  background: var(--review-v2-gray-50);
+  border-radius: 9999px;
+  padding: 3px 8px;
+}
+body.e8-review-shell .review-comment-timestamp:hover {
+  background: var(--review-v2-gray-50);
+  opacity: .9;
+}
+body.e8-review-shell .review-comment.active {
+  border-color: var(--review-v2-gray-500);
+  box-shadow: 0 0 0 1px var(--review-v2-gray-500);
+}
+body.e8-review-shell .review-comment {
+  border-radius: 12px;
+}
+/* Category pills on posted comment cards read as a plain uppercase
+   label in v2, not a per-category colored chip (that treatment is
+   kept only on the composer's selectable category buttons, which are
+   styled inline in CommentInput.tsx). */
+body.e8-review-shell .review-category-pill {
+  background: transparent !important;
+  color: var(--review-v2-gray-400) !important;
+  padding: 0;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+/* Review Modal Container */
+.review-modal {
+  background: var(--review-bg-primary);
+  color: var(--review-text-primary);
+}
+
+/* Review Modal Header */
+.review-header {
+  background: var(--review-bg-secondary);
+  background: linear-gradient(to bottom, var(--review-bg-secondary) 80%, transparent);
+  border-bottom: 1px solid var(--review-border);
+  /* Optimize backdrop-filter for Windows performance */
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 40;
+}
+
+/* Status Dropdown Styles */
+.review-status-dropdown {
+  transition: all 0.2s ease;
+}
+
+.review-status-dropdown[data-status="approved"] {
+  background: var(--review-status-approved);
+  color: white;
+}
+
+.review-status-dropdown[data-status="needs_changes"] {
+  background: var(--review-status-changes);
+  color: white;
+}
+
+.review-status-dropdown[data-status="in_progress"] {
+  background: var(--review-status-progress);
+  color: white;
+}
+
+.review-status-dropdown[data-status="needs_review"] {
+  background: #939597;
+  color: var(--review-text-secondary);
+  border: 1px solid var(--review-border);
+}
+
+/* Comment Sidebar */
+.review-comments-sidebar {
+  background: var(--review-bg-secondary);
+  border-left: 1px solid var(--review-border);
+}
+
+.review-comment {
+  background: var(--review-bg-tertiary);
+  border: 1px solid var(--review-border);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.review-comment:hover {
+  border-color: var(--review-border-hover);
+  background: var(--review-bg-elevated);
+}
+
+.review-comment.active {
+  border-color: var(--review-accent-purple);
+  box-shadow: 0 0 0 1px var(--review-accent-purple);
+}
+
+.review-comment-timestamp {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  color: var(--review-accent-purple);
+  background: rgba(139, 92, 246, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.review-comment-timestamp:hover {
+  background: rgba(139, 92, 246, 0.2);
+}
+
+/* Timeline with Markers */
+.review-timeline {
+  position: relative;
+  height: 48px;
+  background: #9d9d9e;
+  border-radius: 8px;
+  overflow: visible;
+}
+
+.review-timeline-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 4px;
+  transform: translateY(-50%);
+  background: rgba(0, 4, 11, 0.12);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.review-timeline-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #111827;
+  border-radius: 2px;
+  /* Use hardware acceleration */
+  will-change: transform;
+  transform-origin: left center;
+  width: 100%;
+}
+
+.review-timeline-playhead {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  background: #111827;
+  border-radius: 50%;
+  /* Use transform instead of left for performance */
+  left: 0;
+  transform: translate(-50%, -50%);
+  will-change: transform;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  z-index: 10;
+}
+
+.review-timeline-playhead:active {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+/* Comment Markers on Timeline */
+.review-timeline-marker {
+  position: absolute;
+  top: 4px;
+  width: 8px;
+  height: 8px;
+  background: var(--review-comment-marker);
+  border-radius: 50%;
+  transform: translateX(-50%);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  z-index: 5;
+}
+
+.review-timeline-marker:hover {
+  transform: translateX(-50%) scale(1.4);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.3);
+}
+
+.review-timeline-marker.active {
+  background: #111827;
+  box-shadow: 0 0 0 3px var(--review-accent-purple);
+}
+
+/* Annotation Tools */
+.review-annotation-toolbar {
+  background: var(--review-bg-elevated);
+  border: 1px solid var(--review-border);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  gap: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.review-annotation-tool {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--review-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.review-annotation-tool:hover {
+  background: var(--review-bg-tertiary);
+  color: var(--review-text-primary);
+}
+
+.review-annotation-tool.active {
+  background: var(--review-accent-purple);
+  color: white;
+}
+
+/* Comment Input Area */
+.review-comment-input {
+  background: var(--review-bg-tertiary);
+  border: 1px solid var(--review-border);
+  border-radius: 8px;
+  padding: 12px;
+  transition: border-color 0.2s ease;
+}
+
+.review-comment-input:focus-within {
+  border-color: var(--review-border);
+}
+
+.review-comment-input textarea {
+  background: transparent;
+  border: none;
+  color: var(--review-text-primary);
+  resize: none;
+  width: 100%;
+  outline: none;
+}
+
+.review-comment-input textarea::placeholder {
+  color: var(--review-text-muted);
+}
+
+/* Category Pills */
+.review-category-pill {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.review-category-pill[data-category="design"] {
+  background: rgba(139, 92, 246, 0.15);
+  color: #ffffff;
+}
+
+.review-category-pill[data-category="content"] {
+  background: rgba(59, 130, 246, 0.15);
+  color: #ffffff;
+}
+
+.review-category-pill[data-category="timing"] {
+  background: rgba(245, 158, 11, 0.15);
+  color: #ffffff;
+}
+
+.review-category-pill[data-category="technical"] {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ffffff;
+}
+
+.review-category-pill[data-category="other"] {
+  background: rgba(107, 114, 128, 0.15);
+  color: #ffffff;
+}
+
+.review-category-pill[data-category="subtitles"] {
+  background: rgba(59, 130, 242, 0.15);
+  color: #ffffff;
+}
+
+/* Resolve Checkbox */
+.review-resolve-checkbox {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--review-border-hover);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.review-resolve-checkbox:hover {
+  border-color: var(--review-status-approved);
+}
+
+.review-resolve-checkbox:checked {
+  background: var(--review-status-approved);
+  border-color: var(--review-status-approved);
+}
+
+.review-resolve-checkbox:checked::after {
+  content: '✓';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+/* Animations */
+@keyframes review-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes review-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.review-animate-fade-in {
+  animation: review-fade-in 0.3s ease-out;
+}
+
+.review-animate-slide-in {
+  animation: review-slide-in 0.3s ease-out;
+}
+
+/* Glassmorphism Effects */
+.review-glass {
+  background: rgba(26, 26, 26, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--review-border);
+}
+
+/* Video Player Container */
+.review-video-container {
+  position: relative;
+  background: black;
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* Control Bar */
+.review-control-bar {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent);
+  padding: 16px;
+}
+
+/* Desktop compact transport + mode pills */
+.review-compact-transport {
+  min-height: 36px;
+}
+
+.review-compact-scrub:hover .review-compact-scrub-thumb {
+  opacity: 1;
+}
+
+.review-mode-pills button:focus-visible {
+  outline: 2px solid var(--review-accent-purple);
+  outline-offset: 2px;
+}
+
+.review-file-code-badge {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* Scrollbar Styling for Review Components & Comment Lists */
+.review-scrollbar {
+  overflow-y: auto !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.review-scrollbar::-webkit-scrollbar {
+  width: 6px !important;
+  height: 6px !important;
+  display: block !important;
+}
+
+.review-scrollbar::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.review-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border-radius: 9999px !important;
+}
+
+.review-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* Eliminate root html, body, and window scrollbars whenever any review screen / modal is active */
+html.e8-review-open,
+body.e8-review-shell,
+html:has(.fullscreen-dialog),
+body:has(.fullscreen-dialog),
+html:has(.review-modal),
+body:has(.review-modal),
+html:has([data-slot="dialog-content"].fullscreen-dialog),
+body:has([data-slot="dialog-content"].fullscreen-dialog),
+[data-radix-portal]:has(.review-modal),
+[data-radix-portal]:has(.fullscreen-dialog) {
+  overflow: hidden !important;
+  height: 100% !important;
+  max-height: 100vh !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+html.e8-review-open::-webkit-scrollbar,
+body.e8-review-shell::-webkit-scrollbar,
+html:has(.fullscreen-dialog)::-webkit-scrollbar,
+body:has(.fullscreen-dialog)::-webkit-scrollbar,
+html:has(.review-modal)::-webkit-scrollbar,
+body:has(.review-modal)::-webkit-scrollbar,
+[data-radix-portal]:has(.review-modal)::-webkit-scrollbar,
+[data-radix-portal]:has(.fullscreen-dialog)::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.fullscreen-dialog,
+.review-modal {
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.fullscreen-dialog::-webkit-scrollbar,
+.review-modal::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Never display the floating feedback / Report Problem button on any review screen */
+html.e8-review-open [data-feedback-widget-root],
+body.e8-review-shell [data-feedback-widget-root],
+html:has(.fullscreen-dialog) [data-feedback-widget-root],
+body:has(.fullscreen-dialog) [data-feedback-widget-root],
+html:has(.review-modal) [data-feedback-widget-root],
+body:has(.review-modal) [data-feedback-widget-root],
+html:has([data-slot="dialog-content"].fullscreen-dialog) [data-feedback-widget-root],
+body:has([data-slot="dialog-content"].fullscreen-dialog) [data-feedback-widget-root],
+[data-radix-portal]:has(.review-modal) ~ [data-feedback-widget-root],
+[data-radix-portal]:has(.fullscreen-dialog) ~ [data-feedback-widget-root] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+}
+
+
+/* Add to your globals.css or a component-level style */
+.rdp {
+  --rdp-cell-size: 40px;
+}
+
+.rdp-head_cell {
+  width: var(--rdp-cell-size);
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.rdp-cell {
+  width: var(--rdp-cell-size);
+  height: var(--rdp-cell-size);
+}
+
+.rdp-day {
+  width: var(--rdp-cell-size);
+  height: var(--rdp-cell-size);
+}
+
+/* Date Range Picker Calendar Fixes */
+.rdp {
+  --rdp-cell-size: 40px;
+  --rdp-accent-color: hsl(var(--primary));
+  --rdp-background-color: hsl(var(--primary) / 0.1);
+  margin: 0;
+}
+
+.rdp-months {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: nowrap;
+}
+
+.rdp-month {
+  flex-shrink: 0;
+}
+
+.rdp-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1rem;
+}
+
+.rdp-caption_label {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.rdp-nav {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.rdp-nav_button {
+  width: 32px;
+  height: 32px;
+  border-radius: 0.375rem;
+  transition: background-color 0.2s;
+}
+
+.rdp-nav_button:hover {
+  background-color: hsl(var(--accent));
+}
+
+.rdp-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.rdp-head_cell {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  padding: 0.5rem 0;
+  text-align: center;
+}
+
+.rdp-cell {
+  padding: 0.125rem;
+  text-align: center;
+}
+
+.rdp-day {
+  width: var(--rdp-cell-size);
+  height: var(--rdp-cell-size);
+  font-size: 0.875rem;
+  border-radius: 0.375rem;
+  transition: all 0.2s;
+}
+
+.rdp-day:hover:not(.rdp-day_disabled) {
+  background-color: hsl(var(--accent));
+}
+
+.rdp-day_selected {
+  background-color: var(--rdp-accent-color) !important;
+  color: white;
+}
+
+.rdp-day_range_start,
+.rdp-day_range_end {
+  background-color: var(--rdp-accent-color) !important;
+  color: white;
+}
+
+.rdp-day_range_middle {
+  background-color: var(--rdp-background-color);
+  border-radius: 0;
+}
+
+.rdp-day_disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.rdp-day_outside {
+  color: hsl(var(--muted-foreground));
+  opacity: 0.5;
+}

@@ -1,0 +1,183 @@
+import {
+  LayoutDashboard,
+  Users,
+  FileText,
+  Calendar,
+  CheckSquare,
+  Clock,
+  TrendingUp,
+  FolderOpen,
+  Layout,
+  BookOpen,
+  MessageSquare,
+  Archive,
+  DollarSign,
+  ShieldCheck,
+  FileSpreadsheet,
+  Camera,
+  Upload,
+  Settings as SettingsIcon,
+  HardDrive,
+  Briefcase,
+  LogIn,
+  Instagram,
+  Film,
+  PenLine,
+  Target,
+  History,
+  PlayCircle,
+  UserPlus,
+  Activity,
+  FolderCheck,
+  Bot,
+  Link2,
+  Code,
+  LayoutGrid,
+  Folder,
+  BarChart3,
+  ListChecks,
+  Wallet,
+  Bug,
+  Megaphone,
+  ShieldAlert,
+} from 'lucide-react';
+
+export const NAVIGATION_ITEMS = {
+  admin: [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'ai-agent', label: 'AI Agent', icon: Bot },
+    { id: 'reports', label: 'Task Management', icon: FileSpreadsheet },
+    { id: 'drive', label: 'Files & Drive', icon: HardDrive },
+    { id: 'file-verification', label: 'File Verification', icon: FolderCheck },
+    { id: 'logins', label: 'Logins', icon: LogIn },
+    { id: 'leaves', label: 'User Management', icon: Users },
+    { id: 'clients', label: 'Clients', icon: FolderOpen },
+    { id: 'finance', label: 'Financials', icon: DollarSign },
+    { id: 'financials2', label: 'Financials 2', icon: Wallet },
+    { id: 'training', label: 'Training Management', icon: Layout },
+    { id: 'portfolio', label: 'Portfolio', icon: Film },
+    // { id: 'contracts', label: 'Contracts', icon: PenLine },
+    { id: 'production-tracker', label: 'Production Tracker', icon: Target },
+    { id: 'posting-tracker', label: 'Posting Tracker', icon: Calendar },
+    { id: 'feedback', label: 'Feedback', icon: MessageSquare },
+    { id: 'announcements', label: 'Announcements', icon: Megaphone },
+    { id: 'strikes', label: 'Strikes', icon: ShieldAlert },
+    { id: 'repair-folders', label: 'Folder Repair', icon: MessageSquare },
+    { id: 'script-links', label: 'Script Links', icon: FileText },
+    { id: 'nas-backup', label: 'NAS Backup', icon: HardDrive },
+    { id: 'upload-backup', label: 'Upload Backup System', icon: ShieldCheck },
+    // { id: 'scheduler-activity', label: 'Scheduler Activity', icon: Activity },
+    // { id: 'hiring', label: 'Editor Hiring', icon: UserPlus },
+  ],
+  editor: [
+    { id: 'my-tasks', label: 'My Tasks', icon: CheckSquare },
+    { id: 'link-scripts', label: 'Link Scripts', icon: Link2 },
+    { id: 'my-tracker', label: 'My Tracker', icon: Target },
+    { id: 'logins', label: 'Logins', icon: Code },
+    // { id: 'resources', label: 'Resources', icon: BookOpen },
+    { id: 'guidelines', label: 'Guidelines', icon: FileText },
+    { id: 'training', label: 'Training', icon: LayoutGrid },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+    { id: 'drive', label: 'Files & Drive', icon: Folder },
+    { id: 'upload-history', label: 'Upload History', icon: BarChart3 },
+  ],
+  qc: [
+    { id: 'review-queue', label: 'Review Queue', icon: CheckSquare },
+    { id: 'client-review', label: 'Client Review', icon: Clock },
+    { id: 'reports', label: 'Task Management', icon: FileSpreadsheet },
+    { id: 'completed', label: 'Completed', icon: Archive },
+    { id: 'guidelines', label: 'Guidelines', icon: FileText },
+    { id: 'training', label: 'Training', icon: Layout },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+  ],
+  scheduler: [
+    { id: 'approved-queue', label: 'Scheduling Queue', icon: CheckSquare },
+    { id: 'client-review', label: 'Client Review', icon: Clock },
+    { id: 'posting-tracker', label: 'Posting Tracker', icon: Target },
+    { id: 'task-management', label: 'Task Management', icon: FileSpreadsheet },
+    { id: 'drive', label: 'Files & Drive', icon: HardDrive },
+    { id: 'file-verification', label: 'File Verification', icon: FolderCheck },
+    { id: 'logins', label: 'Logins', icon: LogIn },
+    { id: 'guidelines', label: 'Guidelines', icon: FileText },
+    { id: 'training', label: 'Training', icon: Layout },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+  ],
+  manager: [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'clients', label: 'Clients', icon: FolderOpen },
+    { id: 'team', label: 'Team', icon: Users },
+    { id: 'performance', label: 'Performance', icon: TrendingUp },
+    { id: 'reports', label: 'Reports', icon: FileSpreadsheet },
+    { id: 'drive', label: 'Files & Drive', icon: HardDrive },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+    { id: 'leaves', label: 'Employee Management', icon: Users },
+    { id: 'training', label: 'Training Management', icon: Layout },
+    { id: 'portfolio', label: 'Portfolio', icon: Film },
+    { id: 'contracts', label: 'Contracts', icon: PenLine },
+  ],
+  client: [
+    { id: 'approvals', label: 'Content Review', icon: CheckSquare },
+    { id: 'posted', label: 'Posted Content', icon: MessageSquare },
+    { id: 'scripts', label: 'Scripts', icon: FileText },
+    { id: 'production-log', label: 'Production Log', icon: ListChecks },  
+    { id: 'drive', label: 'Files & Drive', icon: HardDrive },
+    { id: 'file-verification', label: 'File Verification', icon: FolderCheck },
+    { id: 'social', label: 'Social Media', icon: Instagram },
+    { id: 'logins', label: 'Logins', icon: LogIn },
+    { id: 'contracts', label: 'Contracts & Billing', icon: FileText },
+    { id: 'help-videos', label: 'E8 Help', icon: PlayCircle },
+  ],
+  videographer: [
+    { id: 'shoots', label: 'Shooting Schedule', icon: Camera },
+    { id: 'script-linking', label: 'Link Scripts', icon: Link2 },
+    { id: 'drive', label: 'Files & Drive', icon: HardDrive },
+    { id: 'production-log', label: 'Production Log', icon: ListChecks },
+    { id: 'file-verification', label: 'File Verification', icon: FolderCheck },
+    { id: 'reports', label: 'Task Management', icon: FileSpreadsheet },
+    { id: 'production-tracker', label: 'Production Tracker', icon: Target },
+    { id: 'posting-tracker', label: 'Posting Tracker', icon: Calendar },
+    { id: 'equipment', label: 'Equipment', icon: SettingsIcon },
+    { id: 'strikes', label: 'Strikes', icon: ShieldAlert },
+    { id: 'training', label: 'Training', icon: Layout },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+    
+  ],
+  // Host Portal (talent-facing). Payments and Employment Information join in later phases.
+  host: [
+    { id: 'host-shoots', label: 'My Shoots', icon: Calendar },
+  ],
+  sales: [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'affiliate', label: 'Affiliate Earnings', icon: DollarSign },
+    { id: 'training', label: 'Training', icon: Layout },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+  ],
+  // Dev Portal: pseudo-role reachable only through the portal switcher by
+  // DEV_PORTAL_EMAILS (see ViewAsRoleContext). Not a DB role.
+  dev: [
+    { id: 'dev-tickets', label: 'Dev Tickets', icon: Bug },
+  ],
+  sales_manager: [
+    { id: 'dashboard', label: 'Sales Team', icon: Users },
+    { id: 'employment-info', label: 'Employment Information', icon: Briefcase },
+  ],
+} as const;
+
+export type NavigationRole = keyof typeof NAVIGATION_ITEMS;
+
+export const getDefaultPage = (role: string): string => {
+  switch (role) {
+    case 'admin': return 'dashboard';
+    case 'editor': return 'my-tasks';
+    case 'qc': return 'review-queue';
+    case 'scheduler': return 'approved-queue';
+    case 'manager': return 'dashboard';
+    case 'client': return 'approvals';
+    case 'videographer': return 'shoots';
+    case 'host': return 'host-shoots';
+    case 'sales': return 'dashboard';
+    case 'sales_manager': return 'dashboard';
+    case 'dev': return 'dev-tickets';
+    default: return 'dashboard';
+  }
+};

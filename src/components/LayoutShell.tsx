@@ -1,0 +1,553 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Button } from './ui/button';
+import { SidebarStorage } from './ui/sidebar';
+import { Badge } from './ui/badge';
+import { Separator } from './ui/separator';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import { SearchInput } from './SearchInput';
+// import { Notifications } from './Notifications';
+import { Settings } from './Settings';
+import { AnnouncementsBell } from './AnnouncementsBell';
+import {
+  LogOut,
+  User,
+  Search,
+  X,
+  Settings as SettingsIcon,
+  ArrowLeftRight,
+  FileText,
+  PlayCircle,
+  Bot
+} from 'lucide-react';
+import { GlobalUploadManager } from './workflow/GlobalUploadManager';
+import { ClientFeedbackWidget } from './client/ClientFeedbackWidget';
+import { NAVIGATION_ITEMS, type NavigationRole } from './constants/navigation';
+import {
+  ROLE_COLORS,
+  getUserDisplayName,
+  getUserAvatar,
+  type UserRole,
+} from './constants/roles';
+import Image from 'next/image';
+import { useAuth } from './auth/AuthContext';
+import { useViewAsRole } from './auth/ViewAsRoleContext';
+import { TimeClockButton } from './TimeClockButton';
+import { StrikeIndicator } from './StrikeIndicator';
+import { SCDigitalClock } from './SCDigitalClock';
+
+function MenuToggleIcon({ isCollapsed, className }: { isCollapsed?: boolean; className?: string }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M3 6h18" />
+      <path d="M3 18h18" />
+      {isCollapsed ? (
+        <>
+          <path d="M3 12h14" />
+          <path d="m13 8 4 4-4 4" />
+        </>
+      ) : (
+        <>
+          <path d="M21 12H7" />
+          <path d="m11 8-4 4 4 4" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+interface LayoutShellProps {
+  currentRole: string | null;
+  currentPage: string;
+  onPageChange: (page: string) => void;
+  onLogout: () => void;
+  children: React.ReactNode;
+}
+
+export function LayoutShell({
+  currentRole,
+  currentPage,
+  onPageChange,
+  onLogout,
+  children,
+}: LayoutShellProps) {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [permittedItems, setPermittedItems] = useState<any[]>([]);
+  const [navLoading, setNavLoading] = useState(true);
+  const [portalLocked, setPortalLocked] = useState(false);
+  const { user: authUser } = useAuth();
+
+  // Fetch portal lock status for client role
+  useEffect(() => {
+    if (currentRole?.toLowerCase() !== 'client') return;
+    fetch('/api/portal/access', { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => setPortalLocked(!data.fullAccess))
+      .catch(() => {});
+  }, [currentRole]);
+
+  // 🔥 Role switching feature
+  const { canSwitchRole, isViewingAsOther, switchableRoles, switchToRole, resetToOriginal, viewingAsClientLabel } = useViewAsRole();
+
+  // Admin portal only: the South Carolina clock sits immediately left of the
+  // role switcher on the right side of the top bar. Keyed off
+  // the signed-in user's real role, not the viewed role, so the layout doesn't
+  // jump around while an admin is switching into other roles.
+  const isAdminPortal = authUser?.role?.toLowerCase() === 'admin';
+  const showStaffClock = currentRole?.toLowerCase() !== 'client';
+
+  const roleDisplay = currentRole
+    ? currentRole.toLowerCase() === 'qc'
+      ? 'QC'
+      : currentRole.toLowerCase() === 'dev'
+      ? 'Dev Portal'
+      : currentRole
+          .toLowerCase()
+          .split('_')
+          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ')
+    : 'User';
+
+  // UPDATED: Fetch permitted navigation items
+  useEffect(() => {
+    if (!currentRole) return;
+    const controller = new AbortController();
+    const normalizedRole = (currentRole as string).toLowerCase() as NavigationRole;
+    const clientForbiddenIds = ['posted', 'monthly-overview', 'youtube-analytics', 'instagram-analytics', 'archive', 'feedback'];
+    const isAIAgentUser = authUser?.email?.trim().toLowerCase() === 'sahilsagvekar230@gmail.com';
+
+    const applyClientFilter = (data: any[]) => {
+      let filtered = data;
+      if (normalizedRole === 'client' && authUser?.hasPostingServices === false) {
+        filtered = filtered.filter((item: any) => !clientForbiddenIds.includes(item.id));
+      }
+      // Scripts is opt-in per client (Client.scriptsRequired) — hide the nav
+      // item entirely for clients who don't need it, rather than showing an
+      // always-empty page.
+      if (normalizedRole === 'client' && authUser?.scriptsRequired === false) {
+        filtered = filtered.filter((item: any) => item.id !== 'scripts');
+      }
+      if (!isAIAgentUser) {
+        filtered = filtered.filter((item: any) => item.id !== 'ai-agent');
+      }
+      return filtered;
+    };
+
+    const fallback = () => {
+      const data = applyClientFilter([...(NAVIGATION_ITEMS[normalizedRole] || [])]);
+      setPermittedItems(data);
+    };
+
+    const fetchNavItems = async () => {
+      try {
+        setNavLoading(true);
+        // 🔥 Send x-viewing-as header when role-switching so API returns correct nav
+        const navHeaders: Record<string, string> = {};
+        if (isViewingAsOther) navHeaders['x-viewing-as'] = normalizedRole;
+        const res = await fetch(`/api/user/navigation?role=${currentRole}`, { signal: controller.signal, headers: navHeaders });
+        if (!res.ok) { fallback(); return; }
+        let data = applyClientFilter(await res.json());
+        // Safety: if API returned items that don't belong to this role's nav, fall back to defaults
+        const roleIds = new Set((NAVIGATION_ITEMS[normalizedRole] || []).map((i: any) => i.id));
+        const validData = data.filter((item: any) => roleIds.has(item.id) || item._dynamicInjected);
+        setPermittedItems(validData.length > 0 ? validData : applyClientFilter([...(NAVIGATION_ITEMS[normalizedRole] || [])]));
+      } catch (err: any) {
+        if (err.name === 'AbortError') return;
+        console.error("Failed to fetch navigation:", err);
+        fallback();
+      } finally {
+        setNavLoading(false);
+      }
+    };
+
+    fetchNavItems();
+    return () => controller.abort();
+  }, [currentRole, authUser?.hasPostingServices, authUser?.scriptsRequired, authUser?.email, isViewingAsOther]);
+
+  const isAIAgentUser = authUser?.email?.trim().toLowerCase() === 'sahilsagvekar230@gmail.com';
+  const items = permittedItems.filter((item) => item.id !== 'ai-agent' || isAIAgentUser);
+
+  const toggleSidebar = () => {
+    setIsSidebarOpen(!isSidebarOpen);
+  };
+
+  if (!currentRole) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold mb-2">No Role Assigned</h1>
+          <p className="text-muted-foreground mb-4">Please contact an administrator to assign you a role.</p>
+          <Button onClick={onLogout}>Sign Out</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50/50">
+      {/* Top Bar */}
+      <header className="bg-background/80 backdrop-blur-md shadow-sm border-b border-border/50 fixed top-0 left-0 right-0 z-30">
+        <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 h-16">
+          {/* Left Section */}
+          <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="lg:hidden min-h-[44px] min-w-[44px]"
+              onClick={toggleSidebar}
+            >
+              {isSidebarOpen ? <X className="h-5 w-5" /> : <MenuToggleIcon className="h-5 w-5" />}
+            </Button>
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="hidden lg:flex"
+                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+              >
+                <MenuToggleIcon className="h-5 w-5" isCollapsed={isSidebarCollapsed} />
+              </Button>
+              <Image
+                src="/assets/575743c7bd0af4189cb4a7349ecfe505c6699243.png"
+                alt="E8 Logo"
+                width={32}
+                height={32}
+                className="w-8 h-8 object-contain"
+                priority
+              />
+              <span className="hidden sm:block font-semibold text-lg text-foreground">
+                {roleDisplay} Portal
+              </span>
+            </div>
+          </div>
+
+          {/* Center Section - Search */}
+          <div className="hidden md:block flex-1 max-w-md mx-8">
+            <SearchInput currentRole={currentRole} onPageChange={onPageChange} />
+          </div>
+
+          {/* Right Section */}
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" className="md:hidden min-h-[44px] min-w-[44px]">
+              <Search className="h-5 w-5" />
+            </Button>
+
+            {/* What's new — announcements from admins (all roles, clients included) */}
+            <AnnouncementsBell />
+
+            {/* Admin portal: SC clock sits immediately left of the role switcher. */}
+            {isAdminPortal && showStaffClock && (
+              <div className="hidden sm:block">
+                <SCDigitalClock />
+              </div>
+            )}
+
+            {/* 🔥 Role Switch Dropdown */}
+            {canSwitchRole && (
+              // modal={false}: Radix's default (modal=true) locks page
+              // scroll while open, which hides the scrollbar and shifts the
+              // whole page a few px left/right on every open/close. This
+              // menu doesn't need the focus-trap/scroll-lock behavior a true
+              // modal needs, so turning it off removes the shift entirely.
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" className="flex items-center gap-2 px-3 py-1.5 h-9 rounded-full border border-gray-200 hover:bg-gray-50 text-gray-800">
+                    <ArrowLeftRight className="h-3.5 w-3.5 text-gray-500" />
+                    <div className="text-[13px] font-medium">
+                      {isViewingAsOther ? `Viewing: ${roleDisplay}` : `Viewing: ${roleDisplay}`}
+                    </div>
+                  </Button>
+                </DropdownMenuTrigger>
+
+                <DropdownMenuContent align="end" className="w-72 rounded-2xl p-0 shadow-lg overflow-hidden">
+                  <div className="flex items-center gap-3 px-5 py-[18px]">
+                    <div className={`h-[38px] w-[38px] shrink-0 rounded-full flex items-center justify-center bg-gray-100 text-foreground`}>
+                      <ArrowLeftRight className="h-4 w-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold truncate">
+                        {authUser?.name || getUserDisplayName(currentRole as UserRole)}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate mt-0.5">
+                        Current: {roleDisplay}
+                      </p>
+                    </div>
+                  </div>
+
+                  <DropdownMenuSeparator className="m-0" />
+
+                  <div className="px-3 py-2.5 flex flex-col gap-0.5">
+                    {switchableRoles.map((role) => {
+                      const isCurrent = currentRole?.toLowerCase() === role.toLowerCase();
+                      const roleLabel =
+                        role.toLowerCase() === 'qc'
+                          ? 'Quality Control'
+                          : role.toLowerCase() === 'dev'
+                          ? 'Dev Portal'
+                          : role.toLowerCase() === 'client' && viewingAsClientLabel
+                          ? viewingAsClientLabel
+                          : role
+                              .split('_')
+                              .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+                              .join(' ');
+                      return (
+                        <DropdownMenuItem
+                          key={role}
+                          onClick={() => switchToRole(role)}
+                          className="cursor-pointer rounded-lg px-2.5 py-2 text-sm gap-2 focus:bg-muted"
+                        >
+                          <span className={`h-[18px] w-[18px] shrink-0 rounded-full border flex items-center justify-center ${isCurrent ? 'border-foreground' : 'border-muted-foreground/40'}`}>
+                            {isCurrent && <span className="h-[9px] w-[9px] rounded-full bg-foreground" />}
+                          </span>
+                          {roleLabel}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
+
+                  {isViewingAsOther && (
+                    <>
+                      <DropdownMenuSeparator className="m-0" />
+                      <div className="px-3 py-2.5">
+                        <DropdownMenuItem
+                          onClick={resetToOriginal}
+                          className="text-foreground font-semibold cursor-pointer rounded-lg px-2.5 py-2 text-sm"
+                        >
+                          <ArrowLeftRight className="mr-2 h-4 w-4" />
+                          Reset to {authUser?.role === 'admin' ? 'Admin' : 'Original'}
+                        </DropdownMenuItem>
+                      </div>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            {/* Help Videos shortcut — client portal only */}
+            {currentRole?.toLowerCase() === 'client' && (
+              <Button
+                variant="ghost"
+                title="E8 Help"
+                onClick={() => onPageChange('help-videos')}
+                className={`flex items-center gap-2 px-3 ${
+                  currentPage === 'help-videos' ? 'bg-muted' : ''
+                }`}
+              >
+                <PlayCircle className="h-5 w-5 text-muted-foreground" />
+                <span className="hidden sm:inline text-sm font-medium">E8 Help</span>
+              </Button>
+            )}
+
+            {/* Time clock + SC clock are staff tools — hidden in client portals
+                (including an admin previewing a client via role switch). */}
+            {currentRole?.toLowerCase() !== 'client' && (
+              <>
+                <StrikeIndicator />
+                <TimeClockButton />
+                {!isAdminPortal && <SCDigitalClock />}
+              </>
+            )}
+            {/* User Menu */}
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-2 px-1.5 py-1 rounded-full hover:bg-muted/50 transition-colors">
+                  <Avatar className="h-8 w-8">
+                    <AvatarImage
+                      src={authUser?.image}
+                      alt={authUser?.name || ''}
+                      onError={(e) => {
+                        e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(authUser?.name || getUserDisplayName(currentRole as UserRole))}&background=random`;
+                      }}
+                    />
+                    <AvatarFallback className="bg-[#EA580C] text-white font-bold text-xs">
+                      {(authUser?.name || 'Eric Davis')
+                        .split(' ')
+                        .map((n) => n[0])
+                        .slice(0, 2)
+                        .join('')
+                        .toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="hidden sm:block text-left">
+                    <div className="text-[14px] font-semibold text-gray-900 leading-tight">
+                      {authUser?.name || 'Eric Davis'}
+                    </div>
+                  </div>
+                </button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent align="end" className="w-56">
+                <div className="px-2 py-3">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage
+                        src={authUser?.image}
+                        alt={authUser?.name || ''}
+                        onError={(e) => {
+                          e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(authUser?.name || getUserDisplayName(currentRole as UserRole))}&background=random`;
+                        }}
+                      />
+                      <AvatarFallback className="text-xs">
+                        {getUserAvatar(currentRole as UserRole)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">
+                        {authUser?.name || getUserDisplayName(currentRole as UserRole)}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {authUser?.email || ''}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem onClick={() => setIsSettingsOpen(true)}>
+                  <User className="mr-2 h-4 w-4" />
+                  Profile
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem onClick={onLogout} className="text-red-600">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Sign Out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </header>
+
+      {/* Sidebar */}
+      <aside
+        className={`
+        fixed top-16 left-0 z-20 w-72 h-[calc(100vh-4rem)] bg-background/80 backdrop-blur-md border-r border-border transform transition-all duration-300 ease-in-out
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        ${isSidebarCollapsed ? 'lg:-translate-x-full' : 'lg:translate-x-0'}
+      `}
+      >
+        <div className="flex flex-col h-full">
+          <div className="lg:hidden flex justify-end p-4">
+            <Button variant="ghost" size="sm" className="min-h-[44px] min-w-[44px]" onClick={toggleSidebar}>
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+
+          <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
+            {navLoading ? (
+              <div className="space-y-3 px-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="h-9 bg-muted rounded-lg animate-pulse" />
+                ))}
+              </div>
+            ) : items.map((item) => {
+              const normalizedRole = (currentRole as string).toLowerCase() as NavigationRole;
+              const Icon = NAVIGATION_ITEMS[normalizedRole]?.find(i => i.id === item.id)?.icon || (item.id === 'ai-agent' ? Bot : FileText);
+              // Exact match, or a sub-page of this item (e.g. 'financials2-ledger'
+              // under 'financials2') so the parent nav item stays highlighted
+              // while drilled into one of its full-page views.
+              const isActive = currentPage === item.id || currentPage.startsWith(`${item.id}-`);
+
+              // For locked client portals, grey out everything except contracts
+              const isClientLocked = portalLocked && normalizedRole === 'client';
+              const isAllowed = item.id === 'contracts';
+              const isDisabled = isClientLocked && !isAllowed;
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    if (isDisabled) return;
+                    onPageChange(item.id);
+                    setIsSidebarOpen(false);
+                  }}
+                  disabled={isDisabled}
+                  className={`
+                    w-full flex items-center gap-3 px-3.5 py-2.5 text-[14px] rounded-xl font-medium transition-all
+                    ${isActive
+                      ? 'bg-black text-white shadow-sm'
+                      : isDisabled
+                      ? 'text-muted-foreground/40 cursor-not-allowed'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100/80'
+                    }
+                  `}
+                >
+                  <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-white' : 'text-gray-500'} ${isDisabled ? 'opacity-30' : ''}`} />
+                  <span className={`truncate text-left ${isDisabled ? 'opacity-40' : ''}`}>{item.label}</span>
+                  {isDisabled && (
+                    <svg className="h-3 w-3 ml-auto opacity-30 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="p-4 border-t border-border space-y-4">
+            {currentRole.toLowerCase() === 'client' && authUser?.linkedClientId && (
+              <SidebarStorage clientId={authUser.linkedClientId} />
+            )}
+            <div className="text-xs text-muted-foreground text-center">
+              {roleDisplay} Portal v2.1
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Mobile Overlay */}
+      {isSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-10 lg:hidden"
+          onClick={toggleSidebar}
+        />
+      )}
+
+      {/* Main Content */}
+      <main className={`transition-all duration-300 ease-in-out pt-16 ${isSidebarCollapsed ? 'lg:ml-0' : 'lg:ml-72'}`}>
+        <div className="p-4 sm:p-6 lg:p-8">{children}</div>
+      </main>
+
+      {/* "Report a Problem" — floating on every screen, every portal */}
+      <ClientFeedbackWidget />
+
+      {/* Settings Dialog */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-background z-50 flex flex-col">
+          <Settings
+            currentRole={currentRole}
+            onClose={() => setIsSettingsOpen(false)}
+          />
+        </div>
+      )}
+
+      <GlobalUploadManager />
+    </div>
+  );
+}

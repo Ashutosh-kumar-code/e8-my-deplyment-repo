@@ -1,0 +1,57 @@
+export const ROLE_COLORS = {
+  admin: 'bg-red-100 text-red-800',
+  editor: 'bg-blue-100 text-blue-800',
+  qc: 'bg-green-100 text-green-800',
+  scheduler: 'bg-orange-100 text-orange-800',
+  manager: 'bg-purple-100 text-purple-800',
+  client: 'bg-indigo-100 text-indigo-800',
+  videographer: 'bg-pink-100 text-pink-800',
+  sales: 'bg-yellow-100 text-yellow-800',
+  host: 'bg-gray-100 text-gray-800'
+} as const;
+
+export const ROLE_NAMES = {
+  admin: 'Admin',
+  editor: 'Editor',
+  qc: 'QC Specialist',
+  scheduler: 'Scheduler',
+  manager: 'Manager',
+  client: 'Client',
+  videographer: 'Videographer',
+  sales: 'Sales',
+  host: 'Host'
+} as const;
+
+export type UserRole = keyof typeof ROLE_COLORS;
+
+export const getUserDisplayName = (role: string): string => {
+  const r = role.toLowerCase() as UserRole;
+  const names: Record<UserRole, string> = {
+    admin: 'Admin User',
+    editor: 'Editor User',
+    qc: 'QC User',
+    scheduler: 'Scheduler User',
+    manager: 'Manager User',
+    client: 'Client User',
+    videographer: 'Video Photographer',
+    sales: 'Sales User',
+    host: 'Host'
+  };
+  return names[r] || 'Portal User';
+};
+
+export const getUserAvatar = (role: string): string => {
+  const r = role.toLowerCase() as UserRole;
+  const avatars: Record<UserRole, string> = {
+    admin: 'AU',
+    editor: 'EU',
+    qc: 'QU',
+    scheduler: 'SU',
+    manager: 'MU',
+    client: 'CU',
+    videographer: 'VP',
+    sales: 'SL',
+    host: 'H'
+  };
+  return avatars[r] || 'PU';
+};

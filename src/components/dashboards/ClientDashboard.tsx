@@ -1,0 +1,2232 @@
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { groupDeliverableTypes, canonicalDeliverableCode } from '@/lib/deliverable-types';
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Switch } from '../ui/switch';
+import { PageHeader } from '../ui/page-header';
+import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import { Textarea } from '../ui/textarea';
+import { Label } from '../ui/label';
+import {
+  CheckCircle,
+  XCircle,
+  Clock,
+  AlertCircle,
+  FileText,
+  Eye,
+  Calendar,
+  User,
+  Play,
+  ArrowRight,
+  Video,
+  Palette,
+  Image as ImageIcon,
+  File,
+  ExternalLink,
+  MessageSquare,
+  Send,
+  RotateCcw,
+  History,
+  Share,
+  Copy,
+  Check,
+  Download,
+  RefreshCw,
+  BarChart3,
+} from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
+import { FullScreenReviewModalFrameIO } from '../client/FullScreenReviewModalFrameIO';
+import { ThumbnailComparisonModal } from '../client/ThumbnailComparisonModal';
+import { ThumbnailReviewModal } from '../client/ThumbnailReviewModal';
+import { FinalRevisionConfirmDialog } from '../client/FinalRevisionConfirmDialog';
+import { TextPostReviewModal } from '../client/TextPostReviewModal';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
+import { ShareDialog } from '../review/ShareDialog';
+import { Checkbox } from '../ui/checkbox';
+
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { FilterSelect } from '../ui/filter-select';
+import { useAuth } from '../auth/AuthContext';
+import { toast } from 'sonner';
+import { FilePreviewModal } from '../FileViewerModal';
+import { SocialAnalyticsDashboard } from '../client/SocialAnalyticsDashboard';
+
+// 🚀 Performance imports
+import { useClientTasks, type ClientTab } from '../../lib/hooks/useClientTasks';
+import { ClientTaskCard, formatDeliverableTypeTitle } from '../client/ClientTaskCard';
+import { TaskGridSkeleton } from '../client/TaskCardSkeleton';
+
+interface TaskFile {
+  id: string;
+  name: string;
+  url: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  driveFileId: string;
+  mimeType: string;
+  size: number;
+  folderType?: string;
+  version?: number;
+  isActive?: boolean;
+  replacedAt?: string;
+  revisionNote?: string;
+  s3Key?: string;
+  downloadUrl?: string;
+  optimizationStatus?: string;
+  optimizationError?: string | null;
+  proxyUrl?: string | null;
+  reviewDriveUrl?: string | null;
+  youtubeVideoId?: string | null;
+}
+
+interface ClientTask {
+  id: string;
+  title: string;
+  description: string;
+  taskType: string;
+  status: string;
+  assignedTo: string;
+  createdBy: string;
+  clientId: string;
+  clientUserId: string;
+  driveLinks: string[];
+  createdAt: string;
+  dueDate: string;
+  priority?: "urgent" | "high" | "medium" | "low";
+  taskCategory?: "design" | "video" | "copywriting" | "review";
+  workflowStep?: string;
+  folderType?: string;
+  qcNotes?: string | null;
+  feedback?: string;
+  files?: TaskFile[];
+  monthlyDeliverable?: any;
+  socialMediaLinks?: string[];
+  // 🔥 Posting title — set by QC, optionally edited by the client here
+  // before the task moves on to the scheduler.
+  postingTitle?: string | null;
+  titleSetByQC?: boolean;
+  titleSetByClient?: boolean;
+  // 🔥 Multi-item posting content lists (composed in the review sidebar)
+  postingTitles?: { id: string; text: string }[];
+  postingDescriptions?: { id: string; text: string }[];
+  postingTags?: { id: string; text: string }[];
+  user?: {
+    name: string;
+    role: string;
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 🔥 PERSIST CLIENT REVIEW RESULT - Similar to QC's persistQCResult          */
+/* -------------------------------------------------------------------------- */
+
+const persistClientResult = async ({
+  taskId,
+  approved,
+  feedback,
+  postingTitles,
+  postingDescriptions,
+  postingTags,
+  folderType,
+  finalRevision,
+}: {
+  taskId: string;
+  approved: boolean;
+  feedback?: string;
+  postingTitles?: { id: string; text: string }[];
+  postingDescriptions?: { id: string; text: string }[];
+  postingTags?: { id: string; text: string }[];
+  // Which deliverable this rejection is about — lets the Slack notification
+  // tag the video editor vs the (possibly different) thumbnail editor.
+  folderType?: 'main' | 'thumbnails';
+  // Client picked "Final Revision": after the fix, QC approval goes straight to the scheduler
+  finalRevision?: boolean;
+}) => {
+  const metaBody: any = {};
+  if (!approved && folderType) metaBody.folderType = folderType;
+
+  if (approved) {
+    metaBody.status = "COMPLETED";
+    metaBody.clientResult = "APPROVED";
+    metaBody.route = "scheduler";
+    if (feedback) metaBody.clientFeedback = feedback;
+  } else {
+    // Client requested revisions → Send back to Editor
+    // Use REJECTED as the valid TaskStatus
+    metaBody.status = "REJECTED";
+    metaBody.clientResult = "REVISION_REQUESTED";
+    metaBody.route = "editor";
+    if (feedback) {
+      metaBody.clientNotes = feedback;
+      metaBody.rejectionReason = feedback;
+      metaBody.feedback = feedback; // Ensure the API recognizes this as the primary feedback field
+    }
+    if (finalRevision === true) metaBody.finalRevision = true;
+  }
+
+  // 🔥 Batch-send the three posting-content lists on every status update
+  // (approve AND revision-request) — titles/descriptions/tags must survive
+  // revision rounds and only disappear via manual delete in the review UI.
+  if (postingTitles !== undefined) metaBody.postingTitles = postingTitles;
+  if (postingDescriptions !== undefined) metaBody.postingDescriptions = postingDescriptions;
+  if (postingTags !== undefined) metaBody.postingTags = postingTags;
+
+  const res = await fetch(`/api/tasks/${taskId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(metaBody),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    console.error("Client review update failed:", body);
+    throw new Error("Failed to update task status");
+  }
+
+  return res.json();
+};
+
+// Content Review status filters. 'rejected' is the internal status key; the
+// client-facing label is "For Revisions".
+const STATUS_FILTERS = [
+  { key: 'pending', label: 'Pending' },
+  { key: 'approved', label: 'Approved' },
+  { key: 'posted', label: 'Posted' },
+  { key: 'rejected', label: 'For Revisions' },
+] as const;
+
+/* -------------------------------------------------------------------------- */
+/* 🔥 MAIN CLIENT DASHBOARD COMPONENT                                         */
+/* -------------------------------------------------------------------------- */
+
+export function ClientDashboard() {
+  // Which tab is on screen. Declared before the data hook because the hook only
+  // loads Approved / Posted / Rejected once the client opens them.
+  const [currentFilter, setCurrentFilter] = useState<ClientTab>('pending');
+
+  // 🚀 SWR for cached data fetching
+  const {
+    tasks,
+    tabTasks,
+    counts,
+    tabs,
+    isLoading: loading,
+    isValidating,
+    error: pendingError,
+    pendingRetry,
+    mutate: refreshTasks,
+    hasActiveJobs
+  } = useClientTasks({
+    revalidateOnFocus: true,
+    activeTab: currentFilter,
+  });
+
+  // 🚀 Auto-refresh when optimization jobs are active
+  useEffect(() => {
+    if (hasActiveJobs) {
+      console.log("⏱️ Active optimization detected, starting poll...");
+      const interval = setInterval(() => refreshTasks(), 15000);
+      return () => clearInterval(interval);
+    }
+  }, [hasActiveJobs, refreshTasks]);
+
+  const [selectedTask, setSelectedTask] = useState<ClientTask | null>(null);
+  const [selectedFile, setSelectedFile] = useState<TaskFile | null>(null);
+  // 🔥 Posting-content lists — initialized from the task when opened,
+  // edited freely in the review sidebar, sent in one batch on approve.
+  const [postingTitles, setPostingTitles] = useState<{ id: string; text: string }[]>([]);
+  const [postingDescriptions, setPostingDescriptions] = useState<{ id: string; text: string }[]>([]);
+  const [postingTags, setPostingTags] = useState<{ id: string; text: string }[]>([]);
+  // 🔥 Client's own template hashtags — shown as selectable chips in the tags tab
+  const [clientTemplateHashtags, setClientTemplateHashtags] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!selectedTask?.clientId) { setClientTemplateHashtags([]); return; }
+    fetch(`/api/clients/${selectedTask.clientId}/hashtags`, { credentials: 'include' })
+      .then((res) => res.json())
+      .then((data) => setClientTemplateHashtags(data.hashtags || []))
+      .catch(() => setClientTemplateHashtags([]));
+  }, [selectedTask?.clientId]);
+  const [showFileSelector, setShowFileSelector] = useState(false);
+  const [showVideoReview, setShowVideoReview] = useState(false);
+  const [showThumbnailReview, setShowThumbnailReview] = useState(false);
+  const [showTextPostReview, setShowTextPostReview] = useState(false);
+  const [showRevisionDialog, setShowRevisionDialog] = useState(false);
+  const [showInlineFinalRevisionConfirm, setShowInlineFinalRevisionConfirm] = useState(false);
+  const [deliverableTypeFilter, setDeliverableTypeFilter] = useState<string>('all');
+  const [pageView, setPageView] = useState<'content' | 'analytics'>('content');
+  const [showGeneralCommentDialog, setShowGeneralCommentDialog] = useState(false);
+  const [generalCommentText, setGeneralCommentText] = useState('');
+  const [isSendingGeneralComment, setIsSendingGeneralComment] = useState(false);
+  const [revisionNotes, setRevisionNotes] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [showComparison, setShowComparison] = useState(false);
+  const [comparisonFiles, setComparisonFiles] = useState<TaskFile[]>([]);
+  const [videoApprovedTasks, setVideoApprovedTasks] = useState<Set<string>>(new Set());
+  const [thumbApprovedTasks, setThumbApprovedTasks] = useState<Set<string>>(new Set());
+
+  // Which task's review window is open right now. Submit handlers (approve /
+  // request revisions / mark as posted) finish asynchronously after a network
+  // call, so by the time they resolve the client may already have opened the
+  // NEXT task. Those late handlers must still show their toast and update the
+  // list, but must NOT close the review window the client is now working in.
+  const selectedTaskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedTaskIdRef.current = selectedTask?.id ?? null;
+  }, [selectedTask]);
+  const isStillOnTask = (taskId: string) =>
+    selectedTaskIdRef.current === null || selectedTaskIdRef.current === taskId;
+
+  // 🔥 Share states
+  const [shareLink, setShareLink] = useState("");
+  const [showShareDialog, setShowShareDialog] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // 🔥 Download Selector states
+  const [showDownloadSelector, setShowDownloadSelector] = useState(false);
+  const [downloadSelectedFiles, setDownloadSelectedFiles] = useState<Set<string>>(new Set());
+
+  // 🔥 Desktop app download progress — window.e8 only exists inside the
+  // Electron shell (see apps/desktop/src/preload.js). We keep a ref of
+  // fileId -> fileName so the progress toast can show a readable name
+  // (the progress events themselves only carry the fileId + percent).
+  const downloadFileNamesRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    const desktop = (window as any).e8;
+    if (!desktop?.isDesktopApp) return;
+
+    desktop.onDownloadProgress(({ fileId, percent }: { fileId: string; percent: number }) => {
+      const fileName = downloadFileNamesRef.current[fileId] || "video";
+
+      if (percent >= 100) {
+        toast.success(`${fileName} downloaded`, { id: `download-${fileId}` });
+      } else {
+        toast.loading(`Downloading ${fileName}... ${percent}%`, { id: `download-${fileId}` });
+      }
+    });
+  }, []);
+
+  // 🔥 Auto-download — desktop app only. When a client logs in (or the
+  // task list refreshes) and auto-download is on, any video attached to
+  // a task awaiting their review that isn't already on disk starts
+  // downloading automatically, using the exact same download function
+  // and progress toast as the manual "Download" button.
+  const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(true);
+  const [autoDownloadReady, setAutoDownloadReady] = useState(false);
+  // Tracks fileIds we've already kicked off this session, so a download
+  // in progress (not yet reflected as "downloaded" on disk) doesn't get
+  // triggered again on the next task-list refresh before it finishes.
+  const autoDownloadTriggeredRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const desktop = (window as any).e8;
+    if (!desktop?.isDesktopApp) return;
+
+    // Older installed desktop builds may not have this method yet (it
+    // ships in the preload bridge, which only updates when the user
+    // updates the app). Fall back to the default rather than throwing.
+    if (typeof desktop.getAutoDownloadSetting !== "function") {
+      setAutoDownloadReady(true);
+      return;
+    }
+
+    desktop.getAutoDownloadSetting().then((enabled: boolean) => {
+      setAutoDownloadEnabled(enabled);
+      setAutoDownloadReady(true);
+    });
+  }, []);
+
+  const toggleAutoDownload = async (checked: boolean) => {
+    const desktop = (window as any).e8;
+    if (!desktop?.isDesktopApp) return;
+    if (typeof desktop.setAutoDownloadSetting !== "function") return;
+
+    setAutoDownloadEnabled(checked);
+    await desktop.setAutoDownloadSetting(checked);
+  };
+
+  useEffect(() => {
+    const desktop = (window as any).e8;
+    if (!desktop?.isDesktopApp) return;
+    if (typeof desktop.isDownloaded !== "function" || typeof desktop.downloadFile !== "function") return;
+    if (!autoDownloadReady || !autoDownloadEnabled) return;
+    if (!tasks || tasks.length === 0) return;
+
+    const reviewTasks = tasks.filter((t: ClientTask) => t.status === "CLIENT_REVIEW");
+
+    reviewTasks.forEach((task: ClientTask) => {
+      (task.files || [])
+        .filter((f: TaskFile) => f.mimeType?.startsWith("video/"))
+        .forEach(async (file: TaskFile) => {
+          if (autoDownloadTriggeredRef.current.has(file.id)) return;
+
+          const alreadyDownloaded = await desktop.isDownloaded(file.id);
+          if (alreadyDownloaded) return;
+
+          autoDownloadTriggeredRef.current.add(file.id);
+          downloadFileNamesRef.current[file.id] = file.name;
+          toast.loading(`Downloading ${file.name}... 0%`, { id: `download-${file.id}` });
+
+          const result = await desktop.downloadFile(file.id, file.name);
+          if (!result.success) {
+            toast.error(`Failed to download ${file.name}: ${result.message || "unknown error"}`, {
+              id: `download-${file.id}`,
+            });
+            // Allow retrying on the next refresh if it failed.
+            autoDownloadTriggeredRef.current.delete(file.id);
+          }
+        });
+    });
+  }, [tasks, autoDownloadEnabled, autoDownloadReady]);
+
+  const { user } = useAuth();
+
+  // Global listener for background task updates
+  useEffect(() => {
+    const handleTaskGlobalUpdate = (e: any) => {
+      if (e.detail?.taskId) {
+        console.log("🔔 Global update received for task in Client:", e.detail.taskId);
+        refreshTasks();
+      }
+    };
+    window.addEventListener('task-updated', handleTaskGlobalUpdate);
+    return () => window.removeEventListener('task-updated', handleTaskGlobalUpdate);
+  }, [refreshTasks]);
+
+  // 🔥 Reset posting-content lists whenever the review session ends
+  useEffect(() => {
+    if (!selectedTask) {
+      setPostingTitles([]);
+      setPostingDescriptions([]);
+      setPostingTags([]);
+    }
+  }, [selectedTask]);
+
+  // Browser Back on a review screen should close the review, not leave the
+  // portal (the portal is a single /dashboard URL, so without a history entry
+  // Back jumps to the previous site page / login). Push one entry while any
+  // review overlay is open and close the overlay when it is popped.
+  const reviewOpen = showVideoReview || showThumbnailReview || showTextPostReview;
+  const reviewHistoryPushed = useRef(false);
+
+  useEffect(() => {
+    if (!reviewOpen) return;
+    try {
+      window.history.pushState({ ...(window.history.state || {}), e8Review: true }, '');
+      reviewHistoryPushed.current = true;
+    } catch {
+      return;
+    }
+
+    const onPop = () => {
+      reviewHistoryPushed.current = false;
+      setShowVideoReview(false);
+      setShowThumbnailReview(false);
+      setShowTextPostReview(false);
+      setSelectedFile(null);
+      setSelectedTask(null);
+    };
+    window.addEventListener('popstate', onPop);
+
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      // Closed from inside the UI (not via Back): drop the entry we pushed.
+      if (reviewHistoryPushed.current) {
+        reviewHistoryPushed.current = false;
+        try {
+          if (window.history.state?.e8Review) window.history.back();
+        } catch {}
+      }
+    };
+  }, [reviewOpen]);
+
+  // Only a task that is waiting for the client's review can be approved or sent
+  // back. The Rejected tab lists every task the client has ever rejected, in any
+  // status (with the editor, in QC, already approved...), and those are
+  // view-only — approving a task mid-fix would skip the editor's revision.
+  const guardReviewable = (task: ClientTask | null | undefined): boolean => {
+    if (task && task.status === 'CLIENT_REVIEW') return true;
+    toast.info("This task isn't waiting for your review right now.");
+    return false;
+  };
+
+  const handleMarkAsPosted = async (task?: ClientTask) => {
+    const taskToMark = task || selectedTask;
+    if (!taskToMark) return;
+
+    try {
+      setIsSubmitting(true);
+      const res = await fetch(`/api/tasks/${taskToMark.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ status: "POSTED" }),
+      });
+
+      if (!res.ok) {
+        let errDetails = "Unknown Error";
+        try {
+          const errData = await res.json();
+          console.error("Mark as Posted API Error Data:", errData);
+          errDetails = errData.error || errData.message || JSON.stringify(errData);
+        } catch (e) {
+          const text = await res.text().catch(() => "Could not read response body");
+          console.error("Mark as Posted API Error Text:", text);
+          errDetails = text || res.statusText;
+        }
+        throw new Error(`Failed to mark as posted [${res.status}]: ${errDetails}`);
+      }
+
+      // Optimistic update via SWR mutate — mark as posted + re-sort
+      refreshTasks((prev) => {
+        if (!prev) return prev;
+        const updated = prev.map((t) =>
+          t.id === taskToMark.id ? { ...t, status: "POSTED" as const } : t
+        );
+        return [...updated].sort((a, b) => {
+          const getOrder = (status: string) => {
+            if (status === 'POSTED') return 3;
+            if (status === 'COMPLETED' || status === 'SCHEDULED') return 2;
+            return 1;
+          };
+          const orderA = getOrder(a.status);
+          const orderB = getOrder(b.status);
+          if (orderA !== orderB) return orderA - orderB;
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+        });
+      }, { revalidate: false });
+
+      toast.success("🚀 Task Marked as Posted", {
+        description: "Task has been updated to posted status.",
+      });
+
+      if (isStillOnTask(taskToMark.id)) {
+        setShowVideoReview(false);
+        setShowFileSelector(false);
+        setSelectedFile(null);
+        setSelectedTask(null);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to mark task as posted");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ---------------------------- APPROVE HANDLER ----------------------------- */
+
+  const handleApprove = async (task?: ClientTask) => {
+    const taskToApprove = task || selectedTask;
+    if (!taskToApprove) return;
+    if (!guardReviewable(taskToApprove)) return;
+
+    try {
+      setIsSubmitting(true);
+
+      // Send the posting-content lists as a batch on approve
+      await persistClientResult({
+        taskId: taskToApprove.id,
+        approved: true,
+        postingTitles,
+        postingDescriptions,
+        postingTags,
+      });
+
+      // Optimistic update via SWR mutate — update + re-sort without a network refetch
+      refreshTasks((prev) => {
+        if (!prev) return prev;
+        const updated = prev.map((t) =>
+          t.id === taskToApprove.id ? { ...t, status: "COMPLETED" as const } : t
+        );
+        return [...updated].sort((a, b) => {
+          const getOrder = (status: string) => {
+            if (status === 'POSTED') return 3;
+            if (status === 'COMPLETED' || status === 'SCHEDULED') return 2;
+            return 1;
+          };
+          const orderA = getOrder(a.status);
+          const orderB = getOrder(b.status);
+          if (orderA !== orderB) return orderA - orderB;
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+        });
+      }, { revalidate: false });
+
+      toast.success("✅ Approved – Sent to Scheduler", {
+        description: "Content has been approved and sent for scheduling.",
+      });
+
+      // Close modals and reset state — but only if the client is still on this
+      // task (a slow reply must not close the next task they've since opened).
+      if (isStillOnTask(taskToApprove.id)) {
+        setShowVideoReview(false);
+        setShowThumbnailReview(false);
+        setShowFileSelector(false);
+        setSelectedFile(null);
+        setSelectedTask(null);
+      }
+
+      // Clear session approval tracking for this task
+      setVideoApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(taskToApprove.id);
+        return next;
+      });
+      setThumbApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(taskToApprove.id);
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to approve task");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ------------------------- REQUEST REVISIONS HANDLER ---------------------- */
+
+  const handleRequestRevisions = async (finalRevision = false) => {
+    if (!selectedTask) return;
+    if (!guardReviewable(selectedTask)) return;
+
+    if (!revisionNotes.trim()) {
+      toast.error("Please provide feedback for the revision request");
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+
+      await persistClientResult({
+        taskId: selectedTask.id,
+        approved: false,
+        feedback: revisionNotes,
+        postingTitles,
+        postingDescriptions,
+        postingTags,
+        finalRevision,
+      });
+
+      // Update task status or keep it?
+      // For revision requests, it might be better to keep it if they want to see "Revision Requested"
+      // But usually they want to move it out or keep it at the end too.
+      // Given the prompt "once approved... should be moved to the end", maybe focus only on approved.
+      // However, if I change the logic for approved, I should probably handle REJECTED too so it doesn't just disappear if they expect consistency.
+      // But the user ONLY asked for approved tasks.
+      // Let's stick strictly to the user's request for approved tasks first.
+      // Wait, if I don't remove REJECTED ones, they will also stay.
+
+      // Let's just remove REJECTED ones as before, UNLESS the user wants them to stay too.
+      // The prompt specifically said "once the client has approved a task".
+
+      refreshTasks((prev) => prev ? prev.filter((t) => t.id !== selectedTask.id) : prev, { revalidate: false });
+
+      if (finalRevision) {
+        toast.success("📝 Final Revision Requested", {
+          description: "Thank you! Once the changes are made and approved, your content goes straight to scheduling.",
+        });
+      } else {
+        toast.success("📝 Revision Requested – Sent to Editor", {
+          description: "Your feedback has been sent to the editor.",
+        });
+      }
+
+      // Close modals and reset state — only if still on this task.
+      if (isStillOnTask(selectedTask.id)) {
+        setShowRevisionDialog(false);
+        setShowVideoReview(false);
+        setShowFileSelector(false);
+        setRevisionNotes("");
+        setSelectedFile(null);
+        setSelectedTask(null);
+      }
+
+      // Clear session approval tracking for this task
+      setVideoApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+      setThumbApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to request revisions");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ----------------------- VIDEO REVIEW MODAL HANDLERS ---------------------- */
+
+  // Called from FullScreenReviewModal when client approves
+  const handleVideoApprove = async (asset: any) => {
+    if (!selectedTask) return;
+    if (!guardReviewable(selectedTask)) return;
+
+    // Mark video as approved locally
+    setVideoApprovedTasks(prev => new Set(prev).add(selectedTask.id));
+
+    const hasThumbnails = selectedTask.files?.some(f => f.folderType === 'thumbnails');
+    const isThumbApproved = thumbApprovedTasks.has(selectedTask.id);
+
+    if (hasThumbnails && !isThumbApproved) {
+      toast.success("Video Approved", {
+        description: "Please also review and approve a thumbnail to complete the task.",
+      });
+      setShowVideoReview(false);
+      setShowFileSelector(true);
+    } else {
+      await handleApprove();
+    }
+  };
+
+  // Called from FullScreenReviewModal when client requests revisions
+  const handleVideoRequestRevisions = async (asset: any, revisionData: any) => {
+    if (!selectedTask) return;
+    if (!guardReviewable(selectedTask)) return;
+
+    const notes = revisionData?.notes || revisionData?.feedback || "";
+
+    try {
+      setIsSubmitting(true);
+
+      await persistClientResult({
+        taskId: selectedTask.id,
+        approved: false,
+        feedback: notes,
+        postingTitles,
+        postingDescriptions,
+        postingTags,
+        folderType: 'main',
+        finalRevision: revisionData?.finalRevision === true,
+      });
+
+      // Remove task from list - Revision requested tasks should disappear as they go back to the editor
+      refreshTasks((prev) => prev ? prev.filter((t) => t.id !== selectedTask.id) : prev, { revalidate: false });
+
+      if (revisionData?.finalRevision === true) {
+        toast.success("📝 Final Revision Requested", {
+          description: "Thank you! Once the changes are made and approved, your content goes straight to scheduling.",
+        });
+      } else {
+        toast.success("📝 Revision Requested – Sent to Editor", {
+          description: "Your feedback has been sent to the editor.",
+        });
+      }
+
+      // Only close if the client is still on this task — if the reply was slow
+      // and they've already opened the next video, leave that window alone.
+      if (isStillOnTask(selectedTask.id)) {
+        setShowVideoReview(false);
+        setSelectedFile(null);
+        setSelectedTask(null);
+      }
+
+      // Clear session approval tracking for this task
+      setVideoApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+      setThumbApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to request revisions");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /* ---------------------- THUMBNAIL REVIEW HANDLERS ------------------------- */
+
+  const handleThumbnailApprove = async (file: TaskFile) => {
+    if (!selectedTask) return;
+    if (!guardReviewable(selectedTask)) return;
+
+    // Mark thumbnail as approved locally
+    setThumbApprovedTasks(prev => new Set(prev).add(selectedTask.id));
+
+    const hasVideo = selectedTask.files?.some(f => f.mimeType?.startsWith('video/') && (f.folderType || 'main') === 'main');
+    const isVideoApproved = videoApprovedTasks.has(selectedTask.id);
+
+    if (hasVideo && !isVideoApproved) {
+      toast.success("Thumbnail Approved", {
+        description: "Please also review and approve the main video to complete the task.",
+      });
+      setShowThumbnailReview(false);
+      setShowFileSelector(true);
+    } else {
+      await handleApprove();
+    }
+  };
+
+  const handleThumbnailRequestRevisions = async (
+    file: TaskFile,
+    feedback: any[],
+    options?: { finalRevision?: boolean }
+  ) => {
+    if (!selectedTask) return;
+    if (!guardReviewable(selectedTask)) return;
+
+    // Summary of feedback
+    const notesArr = feedback.map(f => `[${f.category}] ${f.feedback}`);
+    const notes = notesArr.join('\n');
+
+    try {
+      setIsSubmitting(true);
+      await persistClientResult({
+        taskId: selectedTask.id,
+        approved: false,
+        feedback: notes,
+        postingTitles,
+        postingDescriptions,
+        postingTags,
+        folderType: 'thumbnails',
+        finalRevision: options?.finalRevision === true,
+      });
+
+      refreshTasks((prev) => prev ? prev.filter((t) => t.id !== selectedTask.id) : prev, { revalidate: false });
+
+      if (options?.finalRevision === true) {
+        toast.success("📝 Final Revision Requested", {
+          description: "Thank you! Once the changes are made and approved, your content goes straight to scheduling.",
+        });
+      } else {
+        toast.success("📝 Revisions Requested", {
+          description: "Your feedback on the thumbnail has been sent.",
+        });
+      }
+
+      if (isStillOnTask(selectedTask.id)) {
+        setShowThumbnailReview(false);
+        setShowFileSelector(false);
+        setSelectedFile(null);
+        setSelectedTask(null);
+      }
+
+      // Clear session approval tracking for this task
+      setVideoApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+      setThumbApprovedTasks(prev => {
+        const next = new Set(prev);
+        next.delete(selectedTask.id);
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to request revisions");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /* -------------------------- DOWNLOAD HANDLERS ------------------------------- */
+
+  const handleDownloadAllFiles = async (task?: ClientTask) => {
+    const taskToDownload = task || selectedTask;
+    if (!taskToDownload || !taskToDownload.files || taskToDownload.files.length === 0) {
+      toast.error("No files available for download");
+      return;
+    }
+
+    // Select all active files by default
+    const activeFileIds = taskToDownload.files
+      .filter(f => f.isActive !== false)
+      .map(f => f.id);
+
+    setDownloadSelectedFiles(new Set(activeFileIds));
+    if (task) {
+      setSelectedTask(task);
+    }
+    setShowDownloadSelector(true);
+  };
+
+  const confirmDownload = async () => {
+    if (!selectedTask || downloadSelectedFiles.size === 0) {
+      toast.error("Please select at least one file to download");
+      return;
+    }
+
+    const filesToDownload = selectedTask.files?.filter(f => downloadSelectedFiles.has(f.id)) || [];
+
+    try {
+      setIsSubmitting(true);
+      setShowDownloadSelector(false);
+      toast.info(`Starting download for ${filesToDownload.length} file(s)...`);
+
+      for (const file of filesToDownload) {
+        // 🔥 Desktop app: window.e8 only exists inside the Electron shell
+        // (see apps/desktop/src/preload.js). When present, route the
+        // download through it so the file lands on the client's real
+        // disk and becomes available for local playback in the review
+        // screen — same button, same click, different destination.
+        const desktop = (window as any).e8;
+        if (desktop?.isDesktopApp) {
+          downloadFileNamesRef.current[file.id] = file.name;
+          toast.loading(`Downloading ${file.name}... 0%`, { id: `download-${file.id}` });
+
+          const result = await desktop.downloadFile(file.id, file.name);
+
+          if (!result.success) {
+            toast.error(`Failed to download ${file.name}: ${result.message || "unknown error"}`, {
+              id: `download-${file.id}`,
+            });
+          } else if (result.alreadyDownloaded) {
+            toast.success(`${file.name} already downloaded`, { id: `download-${file.id}` });
+          }
+          // On success (not already-downloaded), the progress listener's
+          // 100% event already flips this toast to the success state —
+          // nothing more to do here.
+          continue;
+        }
+
+        // Priority: downloadUrl > download API for S3 > direct URL
+        if (file.downloadUrl) {
+          window.open(file.downloadUrl, '_blank');
+        } else {
+          const isS3 = file.url?.includes('amazonaws.com') || file.url?.includes('r2.cloudflarestorage.com') || file.url?.includes('r2.dev') || !!file.s3Key;
+          if (isS3) {
+            window.open(`/api/files/${file.id}/download`, '_blank');
+          } else {
+            window.open(file.url, '_blank');
+          }
+        }
+
+        // Small delay for multiple files
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      toast.success("Download requests sent!");
+    } catch (error) {
+      console.error("Error in download loop:", error);
+      toast.error("An error occurred while preparing downloads.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleShare = async (e: React.MouseEvent, task: ClientTask) => {
+    e.stopPropagation();
+    setIsSharing(true);
+    setCopied(false);
+
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expiresAt: null, // Never expires by default
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to generate share link");
+
+      const data = await res.json();
+      setShareLink(data.shareUrl);
+      setShowShareDialog(true);
+
+      // Auto-copy with fallback for focus issues
+      try {
+        await navigator.clipboard.writeText(data.shareUrl);
+        setCopied(true);
+        toast.success("Share link created and copied to clipboard");
+        setTimeout(() => setCopied(false), 3000);
+      } catch (clipErr) {
+        console.warn("Auto-copy to clipboard failed (likely focus issue):", clipErr);
+        toast.success("Share link created!");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to generate share link");
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+
+
+  /* ---------------------------- FILE HANDLING ------------------------------- */
+
+  const handleFileSelect = (file: TaskFile) => {
+    setSelectedFile(file);
+    setShowFileSelector(false);
+
+    if (isReviewable(file)) {
+      if (file.mimeType?.startsWith('video/')) {
+        setShowVideoReview(true);
+      } else if (file.mimeType?.startsWith('image/')) {
+        setShowThumbnailReview(true);
+      }
+    } else {
+      // Open in-app preview modal (standard viewer)
+      setIsPreviewOpen(true);
+    }
+  };
+
+  // Used by the video ⇄ thumbnail switch buttons inside the review modals —
+  // finds the counterpart file on the same task so the client/QC can jump
+  // between the two without closing the review screen.
+  const getPrimaryVideoFile = (task: typeof selectedTask) => {
+    if (!task) return null;
+    // Latest main video, ordered exactly like the review file list
+    // (version desc, then upload date desc). A plain .find() returned the
+    // first file in raw order — V1 — so switching from thumbnails back to
+    // video reopened the oldest version instead of the newest.
+    const videos = (task.files || []).filter(
+      (f) => f.mimeType?.startsWith('video/') && (f.folderType || 'main') === 'main'
+    );
+    if (videos.length === 0) return null;
+    return [...videos].sort((a, b) => {
+      const versionDiff = (b.version || 1) - (a.version || 1);
+      if (versionDiff !== 0) return versionDiff;
+      return new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime();
+    })[0];
+  };
+
+  const getPrimaryThumbnailFile = (task: typeof selectedTask) => {
+    if (!task) return null;
+    return task.files?.find((f) => f.mimeType?.startsWith('image/') && f.folderType === 'thumbnails') || null;
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  // NOTE: this used to be a plain function called inline as
+  // `asset={getVideoAssetFromFile(selectedFile)}` in JSX. That rebuilt a
+  // brand-new object (and a brand-new `versions` array) on every render of
+  // this dashboard — so FullScreenReviewModalFrameIO's "asset changed" reset
+  // effect fired on every unrelated re-render (polling, other UI state,
+  // etc.), not just on real file/task changes. That reset effect zeroes out
+  // currentTime/duration, which is why the review scrubber would
+  // intermittently snap back to 0:00 while a video was actively playing.
+  // Memoizing keeps the object reference stable unless selectedTask or
+  // selectedFile actually change.
+  //
+  // IMPORTANT: this must stay BELOW formatFileSize's declaration — the
+  // useMemo callback runs synchronously the moment this line executes
+  // during render, so if formatFileSize were declared later in the
+  // component it would still be in its temporal dead zone here and this
+  // would throw "Cannot access 'formatFileSize' before initialization".
+  const videoAsset = useMemo(() => {
+    if (!selectedTask || !selectedFile) return null;
+    const file = selectedFile;
+
+    // Get all video files from the same folder type to show as versions
+    const allVideosInFolder = selectedTask.files
+      ?.filter(f =>
+        f.mimeType?.startsWith('video/') &&
+        (f.folderType || 'main') === (file.folderType || 'main')
+      )
+      .sort((a, b) => (b.version || 1) - (a.version || 1)) || [];
+
+    // Build versions array from all videos in the same folder
+    const versions = allVideosInFolder.length > 0
+      ? allVideosInFolder.map((f, index) => ({
+        id: f.id,
+        number: String(f.version || index + 1),
+        thumbnail: 'https://images.unsplash.com/photo-1611605698335-8b1569810432?w=400&h=225&fit=crop',
+        duration: '2:30',
+        uploadDate: new Date(f.uploadedAt).toLocaleDateString(),
+        status: 'client_review' as const,
+        url: f.url, // Store URL to switch videos
+        proxyUrl: f.proxyUrl || null,
+        reviewDriveUrl: f.reviewDriveUrl || null,
+        youtubeVideoId: f.youtubeVideoId || null,
+        sizeBytes: f.size,
+      }))
+      : [{
+        id: file.id,
+        number: String(file.version || 1),
+        thumbnail: 'https://images.unsplash.com/photo-1611605698335-8b1569810432?w=400&h=225&fit=crop',
+        duration: '2:30',
+        uploadDate: new Date(file.uploadedAt).toLocaleDateString(),
+        status: 'client_review' as const,
+        url: file.url,
+        proxyUrl: file.proxyUrl || null,
+        reviewDriveUrl: file.reviewDriveUrl || null,
+        youtubeVideoId: file.youtubeVideoId || null,
+        sizeBytes: file.size,
+      }];
+
+    return {
+      id: selectedTask.id,
+      title: selectedTask.title || 'Review Task',
+      subtitle: `Review Request`,
+      videoUrl: file.url,
+      proxyUrl: file.proxyUrl || null,
+      reviewDriveUrl: file.reviewDriveUrl || null,
+      youtubeVideoId: file.youtubeVideoId || null,
+      thumbnail: 'https://images.unsplash.com/photo-1611605698335-8b1569810432?w=400&h=225&fit=crop',
+      runtime: '2:30',
+      status: 'client_review' as const,
+      client: 'You',
+      platform: 'Web',
+      resolution: '1920x1080',
+      fileSize: formatFileSize(file.size),
+      fileSizeBytes: file.size,
+      uploader: 'Editor',
+      uploadDate: new Date(file.uploadedAt).toLocaleDateString(),
+      versions: versions,
+      currentVersion: file.id,
+      downloadEnabled: true,
+      approvalLocked: selectedTask.status !== 'CLIENT_REVIEW'
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTask, selectedFile]);
+
+  /* ---------------------------- HELPER FUNCTIONS ---------------------------- */
+
+
+  const getFileIcon = (mimeType: string) => {
+    if (mimeType?.startsWith('video/')) return <Video className="h-5 w-5 text-blue-600" />;
+    if (mimeType?.startsWith('image/')) return <ImageIcon className="h-5 w-5 text-green-600" />;
+    if (mimeType?.includes('pdf')) return <FileText className="h-5 w-5 text-red-600" />;
+    return <File className="h-5 w-5 text-gray-600" />;
+  };
+
+  const getFileTypeLabel = (mimeType: string) => {
+    if (mimeType?.startsWith('video/')) return 'Video';
+    if (mimeType?.startsWith('image/')) return 'Image';
+    if (mimeType?.includes('pdf')) return 'PDF';
+    if (mimeType?.includes('document') || mimeType?.includes('word')) return 'Document';
+    if (mimeType?.includes('sheet') || mimeType?.includes('excel')) return 'Spreadsheet';
+    return 'File';
+  };
+
+  const getFolderTypeInfo = (folderType?: string) => {
+    switch (folderType) {
+      case 'main':
+        return { label: 'Main Files', icon: '📁', color: 'bg-blue-100 text-blue-800 border-blue-200' };
+      case 'thumbnails':
+        return { label: 'Thumbnails', icon: '🖼️', color: 'bg-green-100 text-green-800 border-green-200' };
+      case 'tiles':
+        return { label: 'Tiles', icon: '🎨', color: 'bg-purple-100 text-purple-800 border-purple-200' };
+      case 'music-license':
+        return { label: 'Music License', icon: '🎵', color: 'bg-orange-100 text-orange-800 border-orange-200' };
+      case 'covers':
+        return { label: 'Covers', icon: '📔', color: 'bg-pink-100 text-pink-800 border-pink-200' };
+      default:
+        return { label: 'Main Files', icon: '📁', color: 'bg-blue-100 text-blue-800 border-blue-200' };
+    }
+  };
+
+  const groupFilesByFolderType = (files: TaskFile[]) => {
+    const groups: Record<string, TaskFile[]> = {};
+
+    files.forEach(file => {
+      const folderType = file.folderType || 'main';
+      if (!groups[folderType]) {
+        groups[folderType] = [];
+      }
+      groups[folderType].push(file);
+    });
+
+    Object.keys(groups).forEach(key => {
+      groups[key].sort((a, b) => {
+        const versionDiff = (b.version || 1) - (a.version || 1);
+        if (versionDiff !== 0) return versionDiff;
+        return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+      });
+    });
+
+    const orderedKeys = ['main', 'thumbnails', 'tiles', 'music-license', 'covers'];
+    const result: { folderType: string; files: TaskFile[]; info: ReturnType<typeof getFolderTypeInfo> }[] = [];
+
+    orderedKeys.forEach(key => {
+      if (groups[key] && groups[key].length > 0) {
+        result.push({
+          folderType: key,
+          files: groups[key],
+          info: getFolderTypeInfo(key)
+        });
+      }
+    });
+
+    Object.keys(groups).forEach(key => {
+      if (!orderedKeys.includes(key) && groups[key].length > 0) {
+        result.push({
+          folderType: key,
+          files: groups[key],
+          info: getFolderTypeInfo(key)
+        });
+      }
+    });
+
+    return result;
+  };
+
+  const isReviewable = (file: TaskFile) => {
+    if (file.folderType === 'music-license') return false;
+    const reviewableFolders = ['main', 'thumbnails', 'tiles', 'covers'];
+    return (
+      reviewableFolders.includes(file.folderType || 'main') &&
+      (file.mimeType?.startsWith('video/') || file.mimeType?.startsWith('image/'))
+    );
+  };
+
+  const getTaskCategoryIcon = (category?: string) => {
+    switch (category) {
+      case 'video':
+        return <Video className="h-3 w-3" />;
+      case 'design':
+        return <Palette className="h-3 w-3" />;
+      case 'copywriting':
+        return <FileText className="h-3 w-3" />;
+      default:
+        return <FileText className="h-3 w-3" />;
+    }
+  };
+
+  const getPriorityColor = (priority?: string) => {
+    switch (priority) {
+      case 'urgent':
+        return 'border-l-red-500 bg-red-50';
+      case 'high':
+        return 'border-l-orange-500 bg-orange-50';
+      case 'medium':
+        return 'border-l-yellow-500 bg-yellow-50';
+      default:
+        return 'border-l-gray-500 bg-gray-50';
+    }
+  };
+
+  const getTaskThumbnail = (task: ClientTask) => {
+    if (!task.files || task.files.length === 0) return null;
+    // 1. Try to find an active thumbnail
+    const thumbFile = task.files.find(f => f.folderType === 'thumbnails' && f.mimeType?.startsWith('image/') && f.isActive !== false);
+    if (thumbFile) return thumbFile.url;
+    // 2. Try to find any active image
+    const activeImage = task.files.find(f => f.mimeType?.startsWith('image/') && f.isActive !== false);
+    if (activeImage) return activeImage.url;
+    // 3. Fallback to any image
+    const anyImage = task.files.find(f => f.mimeType?.startsWith('image/'));
+    return anyImage?.url || null;
+  };
+
+  const isOverdue = (task: ClientTask) => new Date(task.dueDate) < new Date();
+
+  const isHardPostTask = (task: ClientTask) => {
+    const type = ((task as any).deliverableType || task.monthlyDeliverable?.type || (task as any).oneOffDeliverable?.type || (task as any).taskType || '').toLowerCase().trim();
+    // deliverableType is stored as the short code ("hp"), not the long phrase.
+    return type === 'hp' || type.includes('hard post') || type.includes('graphic image');
+  };
+
+  const isTextPostTask = (task: ClientTask) => {
+    const type = ((task as any).deliverableType || task.monthlyDeliverable?.type || (task as any).oneOffDeliverable?.type || (task as any).taskType || '').toLowerCase();
+    return type.includes('text post');
+  };
+
+  const handleTaskClick = (task: ClientTask) => {
+    setSelectedTask(task);
+    setPostingTitles(task.postingTitles || []);
+    setPostingDescriptions(task.postingDescriptions || []);
+    setPostingTags(task.postingTags || []);
+
+    if (isTextPostTask(task)) {
+      setShowTextPostReview(true);
+      return;
+    }
+
+    // Hard post tasks → skip file selector, open ThumbnailReviewModal with images
+    if (isHardPostTask(task)) {
+      const images = (task.files || [])
+        .filter(f => f.mimeType?.startsWith('image/') && f.isActive !== false)
+        .sort((a, b) => new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime());
+      if (images.length > 0) {
+        setSelectedFile(images[0]);
+        setShowThumbnailReview(true);
+        return;
+      }
+    }
+
+    // Open the review screen directly on the latest main video (or the
+    // thumbnail when there's no video). The file list is only a fallback.
+    const video = getPrimaryVideoFile(task);
+    const thumb = (task.files || []).find(
+      (f) => f.folderType === 'thumbnails' && f.mimeType?.startsWith('image/') && f.isActive !== false,
+    );
+    const direct = video && video.isActive !== false && isReviewable(video) ? video : thumb && isReviewable(thumb) ? thumb : null;
+    if (direct) {
+      handleFileSelect(direct);
+      return;
+    }
+
+    setShowFileSelector(true);
+  };
+
+  /* ----------------------------- STATS (memoized) -------------------------- */
+
+  // Tab badges are exact server counts (not the length of whatever happens to
+  // be loaded). `null` = still loading → shown as "–".
+  const formatTabCount = (n: number | null) => (n === null ? '–' : n);
+  const pendingReviews = formatTabCount(counts.pending);
+  const approvedCount = formatTabCount(counts.approved);
+  const postedCount = formatTabCount(counts.posted);
+  const rejectedCount = formatTabCount(counts.rejected);
+
+  const availableDeliverableTypes = useMemo(() => {
+    const types = new Set<string>();
+    tasks.forEach((task) => {
+      const rawType = (task as any).deliverableType || task.monthlyDeliverable?.type || task.taskType;
+      if (rawType) {
+        types.add(rawType);
+      }
+    });
+    return Array.from(types).sort();
+  }, [tasks]);
+
+  // Each tab shows its own server-loaded list. Rejected is every task the client
+  // has ever rejected, in ANY current status, so it is NOT filtered by status
+  // here — it stays listed while the editor fixes it and after it's approved.
+  // (The deliverable-type dropdown filters whatever pages are loaded.)
+  const filteredTasks = useMemo(() => {
+    const list = tabTasks[currentFilter] ?? [];
+    if (deliverableTypeFilter === 'all') return list;
+    return list.filter(task => {
+      const rawType = (task as any).deliverableType || task.monthlyDeliverable?.type || task.taskType || '';
+      return (canonicalDeliverableCode(rawType) ?? formatDeliverableTypeTitle(rawType)) === deliverableTypeFilter;
+    });
+  }, [tabTasks, currentFilter, deliverableTypeFilter]);
+
+  // Loading / error / paging state of the tab on screen. Pending has its own
+  // request; the other three are paged ("Load more").
+  const activeTabState = currentFilter === 'pending' ? null : tabs[currentFilter];
+  const activeTabLoading = currentFilter === 'pending' ? loading : activeTabState!.isLoading;
+  const activeTabError: Error | null =
+    currentFilter === 'pending'
+      ? (tabTasks.pending.length === 0 ? ((pendingError as Error | undefined) ?? null) : null)
+      : activeTabState!.error;
+  const retryActiveTab = () => {
+    if (currentFilter === 'pending') pendingRetry();
+    else activeTabState!.retry();
+  };
+
+  /* -------------------------------------------------------------------------- */
+
+  // Counterpart files for the review-modal switch buttons — only set (and
+  // thus only rendered) when the task actually has both a video and a
+  // thumbnail to review.
+  const switchToThumbnailFile = getPrimaryThumbnailFile(selectedTask);
+  const switchToVideoFile = getPrimaryVideoFile(selectedTask);
+
+  // "Send a note" — a general comment that isn't tied to any specific video,
+  // posted straight to the client's Slack channel (with the scheduler
+  // tagged). Fire-and-confirm: no thread/history shown back here.
+  const handleSendGeneralComment = async () => {
+    const body = generalCommentText.trim();
+    if (!body) return;
+    setIsSendingGeneralComment(true);
+    try {
+      const res = await fetch('/api/client/general-comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ body }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json?.message || 'Failed to send note');
+      }
+      toast.success('Note sent to your E8 team');
+      setGeneralCommentText('');
+      setShowGeneralCommentDialog(false);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to send note');
+    } finally {
+      setIsSendingGeneralComment(false);
+    }
+  };
+
+  return (
+    <TooltipProvider>
+      <div className="flex flex-col h-full space-y-6">
+        {/* Page-level Navigation: Content Review vs Analytics */}
+        {/* <div className="flex gap-1 p-1 bg-zinc-100 rounded-lg w-fit">
+          <button
+            onClick={() => setPageView('content')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              pageView === 'content'
+                ? 'bg-white shadow-sm text-gray-900'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Content Review
+          </button>
+          <button
+            onClick={() => setPageView('analytics')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+              pageView === 'analytics'
+                ? 'bg-white shadow-sm text-gray-900'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <BarChart3 className="h-4 w-4" />
+            Analytics
+          </button>
+        </div> */}
+
+        {/* Analytics View */}
+        {/* {pageView === 'analytics' && user?.linkedClientId && (
+          <SocialAnalyticsDashboard clientId={user.linkedClientId} />
+        )} */}
+
+        {/* Content Review View */}
+        {pageView === 'content' && (
+          <>
+        {/* Page Header & Filter Row */}
+        <PageHeader
+          title="Content Review"
+          description="Review submitted work and approve or request revisions with feedback"
+          actions={
+          <div className="flex items-center gap-3 shrink-0 flex-wrap sm:flex-nowrap">
+            {/* General note — not tied to a specific video */}
+            <Button
+              variant="outline"
+              className="h-10 shrink-0 gap-2 px-4 rounded-lg border-[#d3d3d6] bg-white text-[13px] font-medium text-[#0a0a0b] hover:bg-[#f4f4f5] hover:text-[#0a0a0b]"
+              onClick={() => setShowGeneralCommentDialog(true)}
+            >
+              <MessageSquare className="h-4 w-4" strokeWidth={1.5} />
+              Send a note
+            </Button>
+
+            {/* Desktop App auto-download toggle */}
+            {typeof window !== 'undefined' && (window as any).e8?.isDesktopApp && (
+              <div className="flex items-center gap-2 shrink-0 mr-1">
+                <Switch
+                  id="auto-download-toggle"
+                  checked={autoDownloadEnabled}
+                  onCheckedChange={toggleAutoDownload}
+                />
+                <label htmlFor="auto-download-toggle" className="text-xs text-zinc-600 whitespace-nowrap cursor-pointer">
+                  Auto-download
+                </label>
+              </div>
+            )}
+
+            {/* Deliverables Dropdown Filter */}
+            <FilterSelect
+              value={deliverableTypeFilter}
+              onValueChange={setDeliverableTypeFilter}
+              placeholder="All Deliverables"
+              className="w-[165px] sm:w-[176px] rounded-lg border-[#d3d3d6] text-[#0a0a0b] hover:border-[#8a8a91] shadow-none"
+              options={[
+                { value: 'all', label: 'All Deliverables' },
+                ...groupDeliverableTypes(availableDeliverableTypes),
+              ]}
+            />
+
+            {/* Status Filter Segmented Control — E8 neutral palette: the active
+                state is signaled by weight + a black count chip, never by color. */}
+            <div className="flex items-center gap-1 p-1 bg-[#f4f4f5] ring-1 ring-inset ring-[#e7e7e9] rounded-xl shrink-0">
+              {STATUS_FILTERS.map(({ key, label }) => {
+                const isActive = currentFilter === key;
+                const count = {
+                  pending: pendingReviews,
+                  approved: approvedCount,
+                  posted: postedCount,
+                  rejected: rejectedCount,
+                }[key];
+                return (
+                  <Fragment key={key}>
+                    {/* Divider sets "For Revisions" apart from the forward-moving statuses */}
+                    {key === 'rejected' && (
+                      <div className="w-px h-4 bg-[#d3d3d6] mx-1 self-center shrink-0" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setCurrentFilter(key)}
+                      aria-pressed={isActive}
+                      className={`h-8 px-3 rounded-lg text-xs sm:text-[13px] flex items-center gap-2 transition-all cursor-pointer border ${
+                        isActive
+                          ? 'bg-white text-[#0a0a0b] font-semibold border-[#e7e7e9] shadow-[0_1px_2px_rgba(10,10,11,0.06)]'
+                          : 'text-[#6b6b72] font-medium border-transparent hover:text-[#0a0a0b]'
+                      }`}
+                    >
+                      <span>{label}</span>
+                      <span
+                        className={`min-w-6 h-5 px-1.5 rounded-md text-[11px] font-semibold tabular-nums inline-flex items-center justify-center ${
+                          isActive ? 'bg-[#0a0a0b] text-white' : 'bg-[#e7e7e9] text-[#38383d]'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+          }
+        />
+
+        <div className="flex-1">
+          {activeTabLoading ? (
+            /* 🚀 Skeleton loading for perceived performance */
+            <TaskGridSkeleton count={8} />
+          ) : activeTabError ? (
+            /* A failed request must never look like an empty tab */
+            <div className="h-64 flex flex-col items-center justify-center text-muted-foreground w-full border-2 border-dashed border-red-200 rounded-2xl bg-red-50/40">
+              <p className="font-medium text-red-700">Couldn&apos;t load these tasks</p>
+              <p className="text-sm mt-1">Please check your connection and try again.</p>
+              <Button variant="outline" size="sm" className="mt-4 gap-2" onClick={retryActiveTab}>
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </Button>
+            </div>
+          ) : filteredTasks.length === 0 ? (
+            <div className="h-64 flex flex-col items-center justify-center text-muted-foreground w-full border-2 border-dashed rounded-2xl bg-muted/20">
+              <CheckCircle className="h-12 w-12 mx-auto mb-4 opacity-40 text-emerald-500" />
+              <p className="font-medium">No tasks found</p>
+              <p className="text-sm mt-1">
+                {deliverableTypeFilter !== 'all' && activeTabState?.hasMore
+                  ? 'None of the tasks loaded so far match this deliverable type'
+                  : currentFilter === 'rejected'
+                    ? "You haven't rejected any tasks"
+                    : `No tasks currently in ${STATUS_FILTERS.find((f) => f.key === currentFilter)?.label ?? currentFilter} status`}
+              </p>
+              {deliverableTypeFilter !== 'all' && activeTabState?.hasMore && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={activeTabState.loadMore}
+                  disabled={activeTabState.isLoadingMore}
+                >
+                  {activeTabState.isLoadingMore ? 'Loading…' : 'Load more'}
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-6">
+              {/* 🚀 Show subtle revalidating indicator */}
+              {isValidating && (
+                <div className="col-span-full flex items-center justify-center py-2">
+                  <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground mr-2" />
+                  <span className="text-xs text-muted-foreground">Refreshing...</span>
+                </div>
+              )}
+              {filteredTasks.map((task) => (
+                /* 🚀 Memoized task card component */
+                <ClientTaskCard
+                  key={task.id}
+                  task={task}
+                  isSelected={selectedTask?.id === task.id}
+                  thumbnail={getTaskThumbnail(task)}
+                  onTaskClick={handleTaskClick}
+                  onShare={handleShare}
+                  onDownload={handleDownloadAllFiles}
+                  isSharing={isSharing}
+                  showRejectionInfo={currentFilter === 'rejected'}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Paging for Approved / Posted / Rejected: the server holds the full
+              history, the screen loads it a page at a time. */}
+          {!activeTabLoading && !activeTabError && activeTabState && filteredTasks.length > 0 && (
+            <div className="flex flex-col items-center gap-2 py-6">
+              <p className="text-xs text-muted-foreground">
+                {activeTabState.total !== null
+                  ? `Showing ${tabTasks[currentFilter].length} of ${activeTabState.total}`
+                  : `Showing ${tabTasks[currentFilter].length}`}
+              </p>
+              {activeTabState.hasMore && (
+                <Button
+                  variant="outline"
+                  onClick={activeTabState.loadMore}
+                  disabled={activeTabState.isLoadingMore}
+                  className="gap-2"
+                >
+                  {activeTabState.isLoadingMore ? (
+                    <>
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Loading…
+                    </>
+                  ) : (
+                    'Load more'
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Send a Note Dialog — general comment, not tied to a video */}
+        <Dialog
+          open={showGeneralCommentDialog}
+          onOpenChange={(open) => {
+            if (!isSendingGeneralComment) setShowGeneralCommentDialog(open);
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                Send a note
+              </DialogTitle>
+              <DialogDescription>
+                Not about a specific video? Send a general note to your E8 team — it goes straight to them, no need to attach it to a task.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="general-comment-text">Your note</Label>
+              <Textarea
+                id="general-comment-text"
+                value={generalCommentText}
+                onChange={(e) => setGeneralCommentText(e.target.value)}
+                placeholder="Type your note here..."
+                rows={5}
+                maxLength={4000}
+                disabled={isSendingGeneralComment}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setShowGeneralCommentDialog(false)}
+                disabled={isSendingGeneralComment}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSendGeneralComment}
+                disabled={isSendingGeneralComment || !generalCommentText.trim()}
+                className="gap-1.5"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {isSendingGeneralComment ? 'Sending…' : 'Send'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* File Selector Dialog */}
+        {selectedTask && (
+          <Dialog open={showFileSelector} onOpenChange={setShowFileSelector}>
+            {/* 🔧 FIX: Added overflow-hidden + flex flex-col for proper Mac layout */}
+            <DialogContent className="max-w-6xl w-[92vw] max-h-[85vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Eye className="h-5 w-5" />
+                  Review Content
+                </DialogTitle>
+                <DialogDescription>
+                  {/* Only show the title and its separator when there is one —
+                      an empty title used to leave a stray leading "- ". */}
+                  {selectedTask.title ? `${selectedTask.title} - ` : ''}
+                  Review files and approve or request revisions
+                </DialogDescription>
+              </DialogHeader>
+
+              {/* 🔧 FIX: Changed from max-h-[50vh] to flex-1 min-h-0 so it fills available space */}
+              <div className="overflow-y-auto flex-1 min-h-0 pr-2">
+                {selectedTask.files && selectedTask.files.length > 0 ? (
+                  <div className="space-y-4">
+                    {groupFilesByFolderType(selectedTask.files).map((group) => (
+                      <div
+                        key={group.folderType}
+                        className="border rounded-lg overflow-hidden"
+                      >
+                        {/* Section Header */}
+                        <div
+                          className={`px-4 py-3 ${group.info.color} border-b flex items-center justify-between`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">{group.info.icon}</span>
+                            <h4 className="font-semibold text-sm">
+                              {group.info.label}
+                            </h4>
+                            <Badge variant="secondary" className="text-xs">
+                              {group.files.length} file
+                              {group.files.length !== 1 ? "s" : ""}
+                            </Badge>
+                          </div>
+                          {group.folderType === "thumbnails" &&
+                            group.files.length > 1 && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="bg-white/50 hover:bg-white text-xs h-8"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setComparisonFiles(group.files);
+                                  setShowComparison(true);
+                                }}
+                              >
+                                <History className="h-3.5 w-3.5 mr-1.5" />
+                                Compare Versions
+                              </Button>
+                            )}
+                        </div>
+
+                        {/* Files in this section */}
+                        <div className="divide-y">
+                          {group.files
+                            .filter((f) => f.isActive !== false)
+                            .map((file, index) => (
+                              <div
+                                key={file.id}
+                                className="p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+                                onClick={() => handleFileSelect(file)}
+                              >
+                                <div className="flex items-center gap-4">
+                                  {/* File Info */}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                      <p className="font-medium text-sm truncate max-w-[300px]">
+                                        {file.name}
+                                      </p>
+                                      <Badge
+                                        variant="default"
+                                        className="text-xs"
+                                      >
+                                        V{file.version || 1}
+                                      </Badge>
+                                      <Badge
+                                        variant="secondary"
+                                        className="text-xs"
+                                      >
+                                        {getFileTypeLabel(file.mimeType)}
+                                      </Badge>
+                                      {/* Visual indicator for partial approval */}
+                                      {((file.folderType || "main") ===
+                                        "main" &&
+                                        videoApprovedTasks.has(
+                                          selectedTask.id,
+                                        )) ||
+                                        (file.folderType === "thumbnails" &&
+                                          thumbApprovedTasks.has(
+                                            selectedTask.id,
+                                          )) ? (
+                                        <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px] h-5 flex items-center gap-1">
+                                          <Check className="h-3 w-3" />
+                                          Approved
+                                        </Badge>
+                                      ) : null}
+                                    </div>
+                                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                                      <span>{formatFileSize(file.size)}</span>
+                                      <span>•</span>
+                                      <span>
+                                        Uploaded{" "}
+                                        {new Date(
+                                          file.uploadedAt,
+                                        ).toLocaleDateString()}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Action Button */}
+                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                    {file.optimizationStatus === 'PROCESSING' || file.optimizationStatus === 'PENDING' ? (
+                                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-blue-50 text-blue-600 border border-blue-100 text-xs animate-pulse">
+                                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                        <span>Optimizing...</span>
+                                      </div>
+                                    ) : isReviewable(file) ? (
+                                      <Button size="sm" variant="default">
+                                        <Play className="h-4 w-4 mr-2" />
+                                        Review
+                                      </Button>
+                                    ) : (
+                                      <Button size="sm" variant="outline">
+                                        <ExternalLink className="h-4 w-4 mr-2" />
+                                        View
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <FileText className="h-16 w-16 mx-auto mb-4 opacity-40" />
+                    <p className="text-lg font-medium">No files available</p>
+                  </div>
+                )}
+              </div>
+
+              {/* 🔧 FIX: Changed mt-4 to mt-auto + flex-shrink-0 so buttons stay pinned at bottom */}
+              {/* <div className="flex items-center justify-end gap-3 pt-4 border-t mt-auto flex-shrink-0">
+                <Button
+                  variant="outline"
+                  className="bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100 mr-auto "
+                  onClick={() => handleDownloadAllFiles()}
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Download Files
+                </Button>
+
+                {selectedTask.status === 'CLIENT_REVIEW' && (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setShowFileSelector(false);
+                        setShowRevisionDialog(true);
+                      }}
+                      disabled={isSubmitting}
+                    >
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Request Revisions
+                    </Button>
+                    <Button
+                      onClick={() => handleApprove()}
+                      disabled={isSubmitting}
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Approve All
+                    </Button>
+                  </>
+                )}
+
+                {user?.hasPostingServices !== false && (selectedTask.status === 'COMPLETED' || selectedTask.status === 'SCHEDULED') && (
+                  <Button
+                    onClick={() => handleMarkAsPosted()}
+                    disabled={isSubmitting}
+                    className="bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Mark as Posted
+                  </Button>
+                )}
+
+                {selectedTask.status === 'POSTED' && (
+                  <div className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-700 rounded-md border border-orange-100 font-medium">
+                    <ExternalLink className="h-4 w-4" />
+                    Content Posted
+                  </div>
+                )}
+              </div> */}
+
+              {/* Bottom Action Bar */}
+              <div className="flex flex-col gap-3 pt-4 border-t mt-auto flex-shrink-0">
+                {/* Share + Download, matching the card buttons: orange Share,
+                    blue Download, split evenly. */}
+                <div className="flex items-center gap-3">
+                  <Button
+                    size="sm"
+                    className="flex-1 justify-center bg-orange-500 hover:bg-orange-600 text-white"
+                    onClick={(e) => handleShare(e, selectedTask)}
+                    disabled={isSharing}
+                  >
+                    <Share className="h-4 w-4 mr-2" />
+                    Share
+                  </Button>
+
+                  <Button
+                    size="sm"
+                    className="flex-1 justify-center bg-blue-600 hover:bg-blue-700 text-white"
+                    onClick={() => handleDownloadAllFiles()}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download Files
+                  </Button>
+                </div>
+
+                {/* Review action buttons row */}
+                {!(
+                  selectedTask.status === "COMPLETED" ||
+                  selectedTask.status === "SCHEDULED" ||
+                  selectedTask.status === "POSTED"
+                ) && (
+                    <div className="flex items-center gap-3">
+                      {/* <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          setShowFileSelector(false);
+                          setShowRevisionDialog(true);
+                        }}
+                        disabled={isSubmitting}
+                      >
+                        <RotateCcw className="h-4 w-4 mr-2" />
+                        Request Revisions
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                        onClick={() => handleApprove()}
+                        disabled={isSubmitting}
+                      >
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                        Approve All
+                      </Button> */}
+                    </div>
+                  )}
+
+                {user?.hasPostingServices !== false &&
+                  (selectedTask.status === "COMPLETED" ||
+                    selectedTask.status === "SCHEDULED") && (
+                    <Button
+                      size="sm"
+                      className="w-full bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => handleMarkAsPosted()}
+                      disabled={isSubmitting}
+                    >
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Mark as Posted
+                    </Button>
+                  )}
+
+                {selectedTask.status === "POSTED" && (
+                  <div className="flex items-center justify-center gap-2 text-green-600 py-1">
+                    <CheckCircle className="h-4 w-4" />
+                    <span className="text-sm font-medium">Content Posted</span>
+                  </div>
+                )}
+
+                {/* Linked SF Tasks intentionally hidden from clients — internal QC status
+                    and staff names shouldn't be client-visible. See LinkedSfTasks usage
+                    in SchedulerSpreadsheetView.tsx / TaskRow.tsx for the internal-facing view. */}
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* Revision Request Dialog */}
+        {selectedTask && (
+          <Dialog
+            open={showRevisionDialog}
+            onOpenChange={setShowRevisionDialog}
+          >
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5" />
+                  Request Revisions
+                </DialogTitle>
+                <DialogDescription>
+                  Provide feedback for "{selectedTask.title}"
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="revision-notes">Your Feedback</Label>
+                  <Textarea
+                    id="revision-notes"
+                    placeholder="Describe what changes you'd like to see..."
+                    value={revisionNotes}
+                    onChange={(e) => setRevisionNotes(e.target.value)}
+                    rows={5}
+                    className="resize-none"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Be specific about what needs to be changed. This feedback
+                    will be sent to the editor.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setShowRevisionDialog(false);
+                      setRevisionNotes("");
+                    }}
+                    disabled={isSubmitting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => handleRequestRevisions(false)}
+                    disabled={isSubmitting || !revisionNotes.trim()}
+                  >
+                    {isSubmitting ? (
+                      <Clock className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4 mr-2" />
+                    )}
+                    Send Feedback
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={() => setShowInlineFinalRevisionConfirm(true)}
+                    disabled={isSubmitting || !revisionNotes.trim()}
+                  >
+                    Final Revision
+                  </Button>
+                </div>
+              </div>
+              <FinalRevisionConfirmDialog
+                open={showInlineFinalRevisionConfirm}
+                onOpenChange={setShowInlineFinalRevisionConfirm}
+                loading={isSubmitting}
+                onConfirm={async () => {
+                  await handleRequestRevisions(true);
+                  setShowInlineFinalRevisionConfirm(false);
+                }}
+              />
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* Fullscreen Video Review Modal */}
+        {selectedTask &&
+          selectedFile &&
+          selectedFile.mimeType?.startsWith("video/") && (
+            <FullScreenReviewModalFrameIO
+              open={showVideoReview}
+              onOpenChange={(open: boolean) => {
+                setShowVideoReview(open);
+                if (!open) {
+                  setSelectedFile(null);
+                  // Don't clear selectedTask so user can continue reviewing
+                }
+              }}
+              asset={videoAsset}
+              onApprove={handleVideoApprove}
+              onRequestRevisions={handleVideoRequestRevisions}
+              allowFinalRevision
+              userRole="client"
+              // 🔀 Switch to thumbnail review without leaving the modal — only
+              // offered when this task actually has a thumbnail to review.
+              onSwitchToThumbnail={
+                switchToThumbnailFile
+                  ? () => handleFileSelect(switchToThumbnailFile)
+                  : undefined
+              }
+              // 🔥 Pass file info for version-tracked feedback
+              taskId={selectedTask.id}
+              currentFileSection={{
+                folderType: selectedFile.folderType || "main",
+                fileId: selectedFile.id,
+                version: selectedFile.version || 1,
+              }}
+              // 🔥 Pass deliverable type for correct aspect ratio (LF=16:9, SF=9:16, SQF=1:1)
+              deliverableType={selectedTask.monthlyDeliverable?.type}
+              // 🔥 Posting content lists
+              postingTitles={postingTitles}
+              postingDescriptions={postingDescriptions}
+              postingTags={postingTags}
+              onPostingTitlesChange={setPostingTitles}
+              onPostingDescriptionsChange={setPostingDescriptions}
+              onPostingTagsChange={setPostingTags}
+              templateHashtags={clientTemplateHashtags}
+            />
+          )}
+        {/* File Preview Modal */}
+        <FilePreviewModal
+          file={selectedFile}
+          open={isPreviewOpen}
+          onOpenChange={setIsPreviewOpen}
+        />
+
+        {/* Thumbnail Comparison Modal */}
+        {selectedTask && (
+          <ThumbnailComparisonModal
+            isOpen={showComparison}
+            onOpenChange={setShowComparison}
+            thumbnails={comparisonFiles}
+            taskTitle={selectedTask.title}
+          />
+        )}
+
+        {/* Fullscreen Thumbnail Review Modal */}
+        {selectedTask &&
+          selectedFile &&
+          selectedFile.mimeType?.startsWith("image/") && (
+            <ThumbnailReviewModal
+              open={showThumbnailReview}
+              onOpenChange={(open: boolean) => {
+                setShowThumbnailReview(open);
+                if (!open) {
+                  setSelectedFile(null);
+                }
+              }}
+              file={selectedFile}
+              allFiles={selectedTask.files || []}
+              taskId={selectedTask.id}
+              taskTitle={selectedTask.title}
+              onApprove={handleThumbnailApprove}
+              onRequestRevisions={handleThumbnailRequestRevisions}
+              allowFinalRevision
+              userRole="client"
+              // Tasks still being fixed (Rejected tab) are view-only.
+              readOnly={['PENDING', 'IN_PROGRESS', 'READY_FOR_QC', 'QC_IN_PROGRESS', 'REJECTED_BY_QC', 'REJECTED_BY_CLIENT', 'VIDEOGRAPHER_ASSIGNED', 'ON_HOLD'].includes(selectedTask.status)}
+              imageLabel={selectedTask && isHardPostTask(selectedTask) ? 'Images' : 'Thumbnails'}
+              onSwitchToVideo={
+                switchToVideoFile ? () => handleFileSelect(switchToVideoFile) : undefined
+              }
+              // 🔥 Posting content lists
+              postingTitles={postingTitles}
+              postingDescriptions={postingDescriptions}
+              postingTags={postingTags}
+              onPostingTitlesChange={setPostingTitles}
+              onPostingDescriptionsChange={setPostingDescriptions}
+              onPostingTagsChange={setPostingTags}
+              templateHashtags={clientTemplateHashtags}
+              onImageReplaced={(oldId: string, newFile: any) => {
+              setSelectedTask((prev: any) => prev ? {
+                ...prev,
+                files: [
+                  ...(prev.files || []).map((f: any) => f.id === oldId ? { ...f, isActive: false, replacedBy: newFile.id } : f),
+                  newFile,
+                ],
+              } : prev);
+            }}
+            />
+          )}
+
+        {selectedTask && isTextPostTask(selectedTask) && (
+          <TextPostReviewModal
+            open={showTextPostReview}
+            onOpenChange={(open: boolean) => {
+              setShowTextPostReview(open);
+              if (!open) setSelectedTask(null);
+            }}
+            taskId={selectedTask.id}
+            taskTitle={selectedTask.title}
+            textContent={(selectedTask as any).textContent || ''}
+            onApprove={() => handleThumbnailApprove(null as any)}
+            onRequestRevisions={(items, options) => handleThumbnailRequestRevisions(null as any, items, options)}
+            allowFinalRevision
+          />
+        )}
+
+        <ShareDialog
+          open={showShareDialog}
+          onOpenChange={setShowShareDialog}
+          shareLink={shareLink}
+          onCopy={() => {
+            navigator.clipboard.writeText(shareLink);
+            setCopied(true);
+            toast.success("Copied to clipboard");
+            setTimeout(() => setCopied(false), 2000);
+          }}
+          copied={copied}
+        />
+
+        {/* Download Selector Dialog */}
+        <Dialog open={showDownloadSelector} onOpenChange={setShowDownloadSelector}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Download className="h-5 w-5" />
+                Select Files to Download
+              </DialogTitle>
+              <DialogDescription>
+                Choose which files you want to download from "{selectedTask?.title}".
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="py-4 space-y-3 max-h-[50vh] overflow-y-auto pr-2">
+              <div className="flex items-center justify-between pb-2 border-b">
+                <span className="text-sm font-medium text-zinc-500">
+                  {downloadSelectedFiles.size} of {selectedTask?.files?.length || 0} selected
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                  onClick={() => {
+                    const allIds = selectedTask?.files?.map(f => f.id) || [];
+                    if (downloadSelectedFiles.size === allIds.length) {
+                      setDownloadSelectedFiles(new Set());
+                    } else {
+                      setDownloadSelectedFiles(new Set(allIds));
+                    }
+                  }}
+                >
+                  {downloadSelectedFiles.size === (selectedTask?.files?.length || 0) ? "Deselect All" : "Select All"}
+                </Button>
+              </div>
+
+              {selectedTask?.files?.map((file) => (
+                <div
+                  key={file.id}
+                  className="flex items-center space-x-3 p-2 rounded-lg hover:bg-zinc-50 transition-colors border border-transparent hover:border-zinc-100"
+                >
+                  <Checkbox
+                    id={`file-${file.id}`}
+                    checked={downloadSelectedFiles.has(file.id)}
+                    onCheckedChange={(checked) => {
+                      const newSelected = new Set(downloadSelectedFiles);
+                      if (checked) {
+                        newSelected.add(file.id);
+                      } else {
+                        newSelected.delete(file.id);
+                      }
+                      setDownloadSelectedFiles(newSelected);
+                    }}
+                  />
+                  <div className="flex-1 min-w-0 pr-2">
+                    <label
+                      htmlFor={`file-${file.id}`}
+                      className="text-sm font-medium leading-none cursor-pointer block truncate"
+                    >
+                      {file.name}
+                    </label>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-zinc-400">
+                        V{file.version || 1} • {formatFileSize(file.size)}
+                      </span>
+                      {file.isActive === false && (
+                        <Badge variant="outline" className="text-[8px] h-3 px-1 border-zinc-200 text-zinc-400">Old Version</Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-4 border-t">
+              <Button variant="outline" size="sm" onClick={() => setShowDownloadSelector(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={confirmDownload}
+                disabled={downloadSelectedFiles.size === 0 || isSubmitting}
+                className="bg-zinc-900 text-white hover:bg-zinc-800"
+              >
+                {isSubmitting ? (
+                  <Clock className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4 mr-2" />
+                )}
+                Download {downloadSelectedFiles.size} {downloadSelectedFiles.size === 1 ? 'File' : 'Files'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+        </>
+        )}
+      </div>
+    </TooltipProvider>
+  );
+}

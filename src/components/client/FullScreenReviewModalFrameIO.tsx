@@ -1,0 +1,1362 @@
+'use client';
+
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../ui/dialog';
+import { toast } from 'sonner';
+import { getVideoSource } from '../workflow/VideoUrlHelper';
+import { ReviewComment, ReviewStatus } from '../review/types';
+import { useAuth } from '../auth/AuthContext';
+import { useHideFeedbackWidgetWhileOpen } from '@/hooks/useFeedbackWidgetVisibility';
+import type { ReviewConnectionInsight } from './ReviewConnectionIndicator';
+import { ReviewScreenDesktop } from './ReviewScreenDesktop';
+import { ReviewScreenMobile } from './ReviewScreenMobile';
+import { FinalRevisionConfirmDialog } from './FinalRevisionConfirmDialog';
+import type { YoutubePlayerHandle } from '../review/YoutubePlayer';
+
+/* ─── Types ───────────────────────────────────────────────────── */
+interface Version {
+    id: string;
+    number: string;
+    thumbnail: string;
+    duration: string;
+    uploadDate: string;
+    status: 'draft' | 'in_qc' | 'client_review' | 'approved';
+    url?: string;
+    proxyUrl?: string | null;
+    reviewDriveUrl?: string | null;
+    youtubeVideoId?: string | null;
+    sizeBytes?: number;
+}
+
+interface ReviewAsset {
+    id: string;
+    title: string;
+    subtitle?: string;
+    videoUrl: string;
+    // Optional lighter-weight encode specifically for review playback (e.g. 1080p/720p)
+    reviewVideoUrl?: string;
+    thumbnail: string;
+    runtime: string;
+    status: 'draft' | 'in_qc' | 'client_review' | 'approved';
+    client: string;
+    platform: string;
+    resolution: string;
+    fileSize: string;
+    fileSizeBytes?: number;
+    uploader: string;
+    uploadDate: string;
+    versions: Version[];
+    currentVersion: string;
+    downloadEnabled: boolean;
+    approvalLocked: boolean;
+    proxyUrl?: string | null;
+    reviewDriveUrl?: string | null;
+    youtubeVideoId?: string | null;
+    taskFeedback?: any[];
+}
+
+interface FullScreenReviewModalProps {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    asset: ReviewAsset | null;
+    onApprove: (asset: ReviewAsset, confirmFinal: boolean) => void;
+    onRequestRevisions: (asset: ReviewAsset, revisionData: RevisionRequest) => void;
+    onNextAsset?: () => void;
+    onSwitchToThumbnail?: () => void;
+    userRole?: 'client' | 'qc';
+    // `opts.sendToClient`: true = force into client review, false = bypass it,
+    // undefined = fall back to forceClientReviewOverride / client default.
+    onSendToClient?: (asset: ReviewAsset, opts?: { sendToClient?: boolean }) => void;
+    onSendBackToEditor?: (asset: ReviewAsset, revisionData: RevisionRequest) => void;
+    currentFileSection?: { folderType: string; fileId: string; version: number };
+    taskId?: string;
+    requiresClientReview?: boolean;
+    // 🔥 QC manual override — lets QC force this specific video into client
+    // review even when the client's account doesn't require it generally.
+    forceClientReviewOverride?: boolean;
+    onForceClientReviewOverrideChange?: (value: boolean) => void;
+    shareToken?: string;
+    // 🔥 Multi-item posting content — set in the review sidebar, batched on approve.
+    // Only meaningful in the review screen itself (not QC's separate approval dialog).
+    postingTitles?: { id: string; text: string }[];
+    postingDescriptions?: { id: string; text: string }[];
+    postingTags?: { id: string; text: string }[];
+    onPostingTitlesChange?: (items: { id: string; text: string }[]) => void;
+    onPostingDescriptionsChange?: (items: { id: string; text: string }[]) => void;
+    onPostingTagsChange?: (items: { id: string; text: string }[]) => void;
+    // 🔥 Client's template hashtags — shown as selectable chips in the tags tab
+    templateHashtags?: string[];
+    // Client portal only: shows a "Final Revision" button next to "Request Revisions".
+    allowFinalRevision?: boolean;
+    // QC only: the client already used "Final Revision" on this task, so it can't be
+    // sent back to the client — approving sends it straight to the scheduler.
+    finalRevisionLocked?: boolean;
+}
+
+interface RevisionRequest {
+    reason: 'design' | 'content' | 'timing' | 'technical' | 'spelling' | 'other' | 'subtitles';
+    notes: string;
+    referenceFile?: File;
+    dueDate?: string;
+    assignTo: 'editor' | 'pm';
+    // Set when the client picked "Final Revision" instead of "Request Revisions"
+    finalRevision?: boolean;
+    entries: Array<{
+        id: string;
+        timestamp: string;
+        reason: 'design' | 'content' | 'timing' | 'technical' | 'spelling' | 'other' | 'subtitles';
+        notes: string;
+        videoTime?: string;
+    }>;
+}
+
+type NetworkInformationLike = {
+    downlink?: number;
+    type?: string;
+    effectiveType?: string;
+    saveData?: boolean;
+    addEventListener?: (type: 'change', listener: () => void) => void;
+    removeEventListener?: (type: 'change', listener: () => void) => void;
+};
+
+const BUFFER_EVENT_COOLDOWN_MS = 2500;
+
+function parseFormattedFileSize(value?: string): number | null {
+    if (!value) return null;
+
+    const match = value.trim().match(/^([\d.]+)\s*(Bytes|KB|MB|GB|TB)$/i);
+    if (!match) return null;
+
+    const size = Number.parseFloat(match[1]);
+    if (!Number.isFinite(size)) return null;
+
+    const unit = match[2].toUpperCase();
+    const powers: Record<string, number> = {
+        BYTES: 0,
+        KB: 1,
+        MB: 2,
+        GB: 3,
+        TB: 4,
+    };
+    const power = powers[unit];
+
+    if (power === undefined) return null;
+
+    return Math.round(size * Math.pow(1024, power));
+}
+
+function calculateRequiredMbps(fileSizeBytes: number | null, durationSeconds: number): number | null {
+    if (!fileSizeBytes || durationSeconds <= 0) return null;
+
+    const averageBitrateMbps = (fileSizeBytes * 8) / durationSeconds / 1_000_000;
+    if (!Number.isFinite(averageBitrateMbps) || averageBitrateMbps <= 0) return null;
+
+    return Math.max(averageBitrateMbps * 1.5, 1);
+}
+
+function formatMbps(value: number): string {
+    return `${value >= 10 ? Math.round(value) : value.toFixed(1)} Mbps`;
+}
+
+function formatEffectiveType(value?: string): string | null {
+    if (!value) return null;
+    return value.toUpperCase().replace('SLOW-', 'SLOW ');
+}
+
+function getConnectionLabel(type?: string, effectiveType?: string): string {
+    const normalizedType = type?.toLowerCase();
+    const formattedEffectiveType = formatEffectiveType(effectiveType);
+
+    switch (normalizedType) {
+        case 'cellular':
+            return formattedEffectiveType ? `Mobile data (${formattedEffectiveType})` : 'Mobile data';
+        case 'wifi':
+            return 'Wi-Fi';
+        case 'ethernet':
+            return 'Ethernet';
+        case 'bluetooth':
+            return 'Bluetooth';
+        case 'wimax':
+            return 'WiMAX';
+        case 'none':
+            return 'Offline';
+        default:
+            return 'Internet';
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+export function FullScreenReviewModalFrameIO({
+    open,
+    onOpenChange,
+    asset,
+    onApprove,
+    onRequestRevisions,
+    onNextAsset,
+    onSwitchToThumbnail,
+    userRole = 'client',
+    onSendToClient,
+    onSendBackToEditor,
+    currentFileSection,
+    taskId,
+    requiresClientReview = false,
+    forceClientReviewOverride = false,
+    onForceClientReviewOverrideChange,
+    shareToken,
+    postingTitles = [],
+    postingDescriptions = [],
+    postingTags = [],
+    onPostingTitlesChange,
+    onPostingDescriptionsChange,
+    onPostingTagsChange,
+    templateHashtags = [],
+    allowFinalRevision = false,
+    finalRevisionLocked = false,
+}: FullScreenReviewModalProps) {
+    const { user } = useAuth();
+
+    /* ── Final Revision (client portal) ── */
+    const [showFinalRevisionConfirm, setShowFinalRevisionConfirm] = useState(false);
+    // Read (and cleared) by the next needs_changes submission
+    const finalRevisionRef = useRef(false);
+
+    /* ── View mode: auto-detect on mount, user can toggle ── */
+    const [viewMode, setViewMode] = useState<'desktop' | 'mobile'>(() => {
+        if (typeof window !== 'undefined') {
+            return window.innerWidth < 768 ? 'mobile' : 'desktop';
+        }
+        return 'desktop';
+    });
+
+    useHideFeedbackWidgetWhileOpen(open);
+
+    /* ── Video state ── */
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isMuted, setIsMuted] = useState(false);
+    const [volume, setVolume] = useState(100);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [duration, setDuration] = useState(0);
+    const [measuredResolution, setMeasuredResolution] = useState('');
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
+    const [currentVersion, setCurrentVersion] = useState('');
+    const currentVersionNumber = useMemo(() => {
+        const v = asset?.versions.find(v => v.id === currentVersion);
+        return v ? parseInt(v.number) : 1;
+    }, [asset, currentVersion]);
+    const [currentVideoUrl, setCurrentVideoUrl] = useState('');
+    const [videoError, setVideoError] = useState(false);
+    const [iframeLoaded, setIframeLoaded] = useState(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const [connectionSpeedMbps, setConnectionSpeedMbps] = useState<number | null>(null);
+    const [connectionSpeedSupported, setConnectionSpeedSupported] = useState(false);
+    const [connectionType, setConnectionType] = useState<string | null>(null);
+    const [effectiveConnectionType, setEffectiveConnectionType] = useState<string | null>(null);
+    const [bufferingEvents, setBufferingEvents] = useState(0);
+    const [isBuffering, setIsBuffering] = useState(false);
+    // True while the native <video> has no playable data yet — the initial
+    // fetch, or the wait after pressing play / seeking before frames arrive.
+    // Drives the loading spinner so the video area isn't just a blank screen.
+    const [isVideoLoading, setIsVideoLoading] = useState(false);
+    const [retryKey, setRetryKey] = useState(0); // cache-busting key for video retries
+    const videoRetryCountRef = useRef(0);
+    const MAX_VIDEO_RETRIES = 3;
+
+    /* ── Review state ── */
+    const [comments, setComments] = useState<ReviewComment[]>([]);
+    const [activeCommentId, setActiveCommentId] = useState<string | undefined>();
+    const [showCommentInput, setShowCommentInput] = useState(true);
+    const [confirmFinal, setConfirmFinal] = useState(false);
+    const [savingFeedback, setSavingFeedback] = useState(false);
+
+    // Stable identity for the current viewer — logged-in users use their numeric id,
+    // share-link visitors use the shareToken as a surrogate key.
+    const viewerAuthorId = useMemo(
+        () => (user?.id ? String(user.id) : shareToken ?? null),
+        [user?.id, shareToken],
+    );
+
+    const isClientViewer = userRole === 'client' || Boolean(shareToken);
+
+    const sortedComments = useMemo(() => {
+        let filtered = [...comments];
+
+        // Feature 1 — clients only see their own comments
+        if (isClientViewer && viewerAuthorId) {
+            filtered = filtered.filter(
+                c => c.authorId === viewerAuthorId || c.authorId === 'current-user',
+            );
+        }
+
+        // Feature 2 — only show comments for the currently playing version
+        if (currentVersionNumber) {
+            filtered = filtered.filter(c => (c.version ?? 1) === currentVersionNumber);
+        }
+
+        return filtered.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
+    }, [comments, isClientViewer, viewerAuthorId, currentVersionNumber]);
+
+    // All comments left by clients, across every version — feeds the
+    // "Client comments" dropdown so nothing gets lost when switching versions.
+    const allClientComments = useMemo(
+        () => [...comments]
+            .filter(c => c.authorRole === 'client')
+            .sort((a, b) => a.timestampSeconds - b.timestampSeconds),
+        [comments],
+    );
+
+    /* ── UI state ── */
+    const [showApprovalSuccess, setShowApprovalSuccess] = useState(false);
+    const [showRevisionSuccess, setShowRevisionSuccess] = useState(false);
+
+    // After approve / send-back the success screen shows for 2s and then closes
+    // this window. The timer lives in a ref so it can be cancelled — otherwise
+    // it fires later and closes whatever video the reviewer has opened in the
+    // meantime. It's cancelled when the reviewed task/video changes or this
+    // component unmounts, and the success overlays are cleared with it.
+    const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const reviewKey = taskId || asset?.id;
+    useEffect(() => {
+        return () => {
+            if (closeTimerRef.current) {
+                clearTimeout(closeTimerRef.current);
+                closeTimerRef.current = null;
+            }
+            setShowApprovalSuccess(false);
+            setShowRevisionSuccess(false);
+        };
+    }, [reviewKey]);
+    const scheduleCloseAfterSuccess = (clearOverlay: () => void) => {
+        if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = setTimeout(() => {
+            closeTimerRef.current = null;
+            clearOverlay();
+            onOpenChange(false);
+        }, 2000);
+    };
+    const [showInfoPanel, setShowInfoPanel] = useState(false);
+    const [showShareDialog, setShowShareDialog] = useState(false);
+    const [shareLink, setShareLink] = useState('');
+    const [generatingLink, setGeneratingLink] = useState(false);
+    const [linkCopied, setLinkCopied] = useState(false);
+
+    /* ── Lock scroll on html and body when review modal is open ── */
+    useEffect(() => {
+        if (!open) return;
+        const prevHtmlOverflow = document.documentElement.style.overflow;
+        const prevBodyOverflow = document.body.style.overflow;
+        const prevHtmlScrollbar = document.documentElement.style.scrollbarWidth;
+
+        document.documentElement.classList.add('e8-review-open');
+        document.documentElement.style.overflow = 'hidden';
+        document.documentElement.style.scrollbarWidth = 'none';
+        document.body.style.overflow = 'hidden';
+
+        return () => {
+            document.documentElement.classList.remove('e8-review-open');
+            document.documentElement.style.overflow = prevHtmlOverflow;
+            document.documentElement.style.scrollbarWidth = prevHtmlScrollbar;
+            document.body.style.overflow = prevBodyOverflow;
+        };
+    }, [open]);
+
+    /* ── Refs ── */
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const youtubePlayerRef = useRef<YoutubePlayerHandle>(null);
+    const iframeRef = useRef<HTMLIFrameElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const commentsRef = useRef<HTMLDivElement>(null);
+    const lastTimeUpdateRef = useRef<number>(0);
+    const lastBufferEventRef = useRef(0);
+
+    /* ── Video source ── */
+    const videoSource = useMemo(() => {
+        const fileId = currentVersion || asset?.currentVersion;
+        const v = asset?.versions.find(ver => ver.id === fileId);
+
+        if (!asset) {
+            return { type: 'video' as const, src: '' };
+        }
+
+        const source = getVideoSource({
+            url: currentVideoUrl || asset.videoUrl || '',
+            id: fileId,
+            proxyUrl: v?.proxyUrl || asset.proxyUrl,
+            reviewDriveUrl: v?.reviewDriveUrl || asset.reviewDriveUrl,
+            youtubeVideoId: v?.youtubeVideoId || asset.youtubeVideoId,
+            // First attempt plays the already-signed storage URL directly
+            // (no /api/files/:id/stream hop). Retries go through /stream,
+            // which signs a fresh URL and tolerates the `_r=` param below.
+            preferDirect: retryKey === 0,
+        });
+
+        // Append cache-busting param on retries to avoid stale/failed responses.
+        // Never on a presigned URL though — its signature covers the exact
+        // query string, so an extra param would turn a retry into a 403.
+        if (retryKey > 0 && source.type === 'video' && !source.src.includes('X-Amz-Signature=')) {
+            const separator = source.src.includes('?') ? '&' : '?';
+            return { ...source, src: `${source.src}${separator}_r=${retryKey}` };
+        }
+        return source;
+    }, [currentVideoUrl, asset, currentVersion, retryKey]);
+
+    const currentVersionFileSizeBytes = useMemo(() => {
+        const currentVersionAsset = asset?.versions.find(ver => ver.id === currentVersion);
+
+        return currentVersionAsset?.sizeBytes
+            ?? asset?.fileSizeBytes
+            ?? parseFormattedFileSize(asset?.fileSize);
+    }, [asset, currentVersion]);
+
+    const requiredSpeedMbps = useMemo(() => {
+        if (videoSource.type !== 'video') return null;
+        return calculateRequiredMbps(currentVersionFileSizeBytes, duration);
+    }, [videoSource.type, currentVersionFileSizeBytes, duration]);
+
+    const connectionInsight = useMemo<ReviewConnectionInsight>(() => {
+        const connectionLabel = getConnectionLabel(connectionType ?? undefined, effectiveConnectionType ?? undefined);
+        const currentSpeedText = connectionSpeedMbps !== null ? formatMbps(connectionSpeedMbps) : 'Not reported';
+        const requiredSpeedText = requiredSpeedMbps !== null
+            ? `~${formatMbps(requiredSpeedMbps)}`
+            : videoSource.type === 'iframe'
+                ? 'Not available'
+                : 'Measuring...';
+
+        let status: ReviewConnectionInsight['status'] = 'unknown';
+        let statusLabel = videoSource.type === 'iframe' ? 'Estimate only' : 'Measuring';
+
+        if (isBuffering) {
+            status = 'poor';
+            statusLabel = 'Buffering';
+        } else if (connectionSpeedMbps !== null && requiredSpeedMbps !== null) {
+            if (connectionSpeedMbps >= requiredSpeedMbps * 1.25) {
+                status = 'good';
+                statusLabel = 'Good';
+            } else if (connectionSpeedMbps >= requiredSpeedMbps) {
+                status = 'warning';
+                statusLabel = 'May buffer';
+            } else {
+                status = 'poor';
+                statusLabel = 'Too slow';
+            }
+        } else if (requiredSpeedMbps !== null) {
+            status = 'unknown';
+            statusLabel = 'Estimate only';
+        }
+
+        if (!isBuffering && bufferingEvents > 0 && status !== 'poor') {
+            status = 'warning';
+            statusLabel = 'Unstable';
+        }
+
+        const helperParts: string[] = [];
+
+        if (connectionLabel !== 'Internet') {
+            helperParts.push(`Connection detected as ${connectionLabel}.`);
+        } else if (effectiveConnectionType && !connectionType) {
+            helperParts.push(`Browser reported a ${formatEffectiveType(effectiveConnectionType)} quality estimate, but not whether it is Wi-Fi or mobile data.`);
+        }
+
+        if (isBuffering) {
+            helperParts.push('Playback is currently buffering.');
+        } else if (bufferingEvents > 0) {
+            helperParts.push(`Buffering seen ${bufferingEvents} time${bufferingEvents === 1 ? '' : 's'} in this review.`);
+        }
+
+        if (videoSource.type === 'iframe') {
+            helperParts.push('This embedded player hides the exact bitrate, so only the browser connection estimate is available.');
+        } else if (connectionSpeedMbps !== null && requiredSpeedMbps !== null) {
+            if (bufferingEvents > 0 && connectionSpeedMbps >= requiredSpeedMbps * 1.25) {
+                helperParts.push('The browser estimate looks healthy, but the connection has still dipped during playback.');
+            } else if (connectionSpeedMbps >= requiredSpeedMbps * 1.25) {
+                helperParts.push('This connection should be enough for smooth playback.');
+            } else if (connectionSpeedMbps >= requiredSpeedMbps) {
+                helperParts.push('This connection is close to the minimum and may buffer if it dips.');
+            } else {
+                helperParts.push('This connection is below the recommended speed for smooth playback.');
+            }
+        } else if (requiredSpeedMbps !== null) {
+            helperParts.push(connectionSpeedSupported
+                ? 'The browser is not exposing a usable downlink estimate right now, so we can only show the recommended speed.'
+                : 'This browser does not report internet speed, so we can only show the recommended speed.'
+            );
+        } else {
+            helperParts.push('We are still measuring this video so the smooth-playback requirement can be calculated.');
+        }
+
+        return {
+            status,
+            statusLabel,
+            connectionLabel,
+            currentSpeedText,
+            requiredSpeedText,
+            helperText: helperParts.join(' '),
+        };
+    }, [
+        bufferingEvents,
+        connectionType,
+        connectionSpeedMbps,
+        connectionSpeedSupported,
+        effectiveConnectionType,
+        isBuffering,
+        requiredSpeedMbps,
+        videoSource.type,
+    ]);
+
+    /* ── Auto-retry on video error ── */
+    const handleVideoError = useCallback(() => {
+        if (videoRetryCountRef.current < MAX_VIDEO_RETRIES) {
+            videoRetryCountRef.current++;
+            console.log(`[Video] Retry ${videoRetryCountRef.current}/${MAX_VIDEO_RETRIES}...`);
+            setTimeout(() => {
+                setRetryKey(Date.now());
+            }, 1500);
+        } else {
+            setVideoError(true);
+        }
+    }, []);
+
+    useEffect(() => {
+        const nav = navigator as Navigator & {
+            connection?: NetworkInformationLike;
+            mozConnection?: NetworkInformationLike;
+            webkitConnection?: NetworkInformationLike;
+        };
+        const connection = nav.connection ?? nav.mozConnection ?? nav.webkitConnection;
+
+        if (!connection) {
+            setConnectionSpeedSupported(false);
+            setConnectionSpeedMbps(null);
+            return;
+        }
+
+        const updateConnectionSpeed = () => {
+            const downlink = typeof connection.downlink === 'number' && Number.isFinite(connection.downlink)
+                ? connection.downlink
+                : null;
+
+            setConnectionSpeedSupported(downlink !== null);
+            setConnectionSpeedMbps(downlink);
+            setConnectionType(typeof connection.type === 'string' ? connection.type : null);
+            setEffectiveConnectionType(typeof connection.effectiveType === 'string' ? connection.effectiveType : null);
+        };
+
+        updateConnectionSpeed();
+        connection.addEventListener?.('change', updateConnectionSpeed);
+
+        return () => {
+            connection.removeEventListener?.('change', updateConnectionSpeed);
+        };
+    }, []);
+
+    /* ── Fetch feedback from server ── */
+    const fetchFeedback = useCallback(async () => {
+        const id = taskId || asset?.id;
+        if (!id) return;
+        try {
+            const res = await fetch(`/api/tasks/${id}/feedback`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.feedback && Array.isArray(data.feedback)) {
+                const targetFolder = currentFileSection?.folderType || 'main';
+                const mappedComments: ReviewComment[] = data.feedback
+                    .filter((fb: any) => (fb.folderType || 'main') === targetFolder)
+                    // Keep every version's comments here — the version
+                    // picker below (sortedComments) is what scopes them to
+                    // whichever version is currently playing. Dropping
+                    // anything not tied to the current fileId used to mean
+                    // past-version comments never loaded at all, so
+                    // switching versions had nothing to show. The "don't
+                    // bundle stale comments into the next rejection's Slack
+                    // message" concern that this filter was for is handled
+                    // at the point that message gets built (see
+                    // handleStatusChange / handleRejectWithComment, which
+                    // use sortedComments, not this raw list).
+                    .map((fb: any) => {
+                        const ts = fb.timestamp || '0:00';
+                        const parts = ts.split(':');
+                        const tsSeconds = parts.length === 2 ? parseInt(parts[0]) * 60 + parseInt(parts[1]) : 0;
+                        return {
+                            id: fb.id,
+                            taskId: id,
+                            authorId: String(fb.user?.id || fb.createdBy || 0),
+                            authorName: fb.user?.name || 'Member',
+                            authorRole: fb.user?.role || undefined,
+                            content: fb.feedback,
+                            timestamp: ts,
+                            timestampSeconds: tsSeconds,
+                            isGeneral: fb.timestamp === 'General' || (fb.category || '').split(',').includes('general') || undefined,
+                            category: fb.category ? fb.category.split(',') : ['other'],
+                            createdAt: new Date(fb.createdAt),
+                            resolved: fb.status === 'resolved',
+                            version: fb.file?.version || 1,
+                            screenshotUrl: fb.screenshotUrl || undefined,
+                            annotations: fb.annotations || undefined,
+                            voiceUrl: fb.voiceUrl || undefined,
+                            voiceDurationSec: fb.voiceDurationSec || undefined,
+                            attachments: fb.attachments || undefined,
+                        };
+                    });
+                setComments(mappedComments);
+            }
+        } catch (err) {
+            console.error('Error fetching feedback:', err);
+        }
+    }, [taskId, asset?.id, currentFileSection?.folderType, currentFileSection?.fileId]);
+
+    /* ── Initialise on asset change ── */
+    useEffect(() => {
+        if (!asset) return;
+        setCurrentVersion(asset.currentVersion);
+        // If a lighter review encode exists, prefer it as the starting source
+        setCurrentVideoUrl(asset.reviewVideoUrl || asset.videoUrl);
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
+        setMeasuredResolution('');
+        setConfirmFinal(false);
+        setShowApprovalSuccess(false);
+        setShowRevisionSuccess(false);
+        setVideoError(false);
+        setRetryKey(0);
+        videoRetryCountRef.current = 0;
+        setIframeLoaded(false);
+        setActiveCommentId(undefined);
+        setShowCommentInput(false);
+
+        // Fetch fresh comments from the API whenever the asset opens
+        fetchFeedback();
+
+        if (user) fetchExistingShareLinks(taskId || asset.id);
+    }, [asset, taskId, user, fetchFeedback]);
+
+    useEffect(() => {
+        setBufferingEvents(0);
+        setIsBuffering(false);
+        lastBufferEventRef.current = 0;
+    }, [asset?.id, currentVersion, videoSource.src]);
+
+    useEffect(() => {
+        if (!open || videoSource.type !== 'video') {
+            setIsBuffering(false);
+            setIsVideoLoading(false);
+            return;
+        }
+
+        const video = videoRef.current;
+        if (!video) return;
+
+        // Nothing loaded yet (not even metadata) → show the spinner straight away.
+        setIsVideoLoading(video.readyState < 1);
+
+        // 'loadstart' = a (re)load began; 'waiting' fires when playback or a
+        // seek can't continue for lack of data — including right after pressing
+        // play before the first frame has arrived.
+        const markLoading = () => setIsVideoLoading(true);
+        const clearLoading = () => setIsVideoLoading(false);
+        video.addEventListener('loadstart', markLoading);
+        video.addEventListener('waiting', markLoading);
+        video.addEventListener('loadedmetadata', clearLoading);
+        video.addEventListener('loadeddata', clearLoading);
+        video.addEventListener('canplay', clearLoading);
+        video.addEventListener('playing', clearLoading);
+        video.addEventListener('pause', clearLoading);
+        video.addEventListener('error', clearLoading);
+        const markBuffering = () => {
+            if (video.paused || video.seeking || video.currentTime <= 0) return;
+
+            const now = Date.now();
+            if (now - lastBufferEventRef.current >= BUFFER_EVENT_COOLDOWN_MS) {
+                lastBufferEventRef.current = now;
+                setBufferingEvents(prev => prev + 1);
+            }
+
+            setIsBuffering(true);
+        };
+
+        const clearBuffering = () => setIsBuffering(false);
+
+        video.addEventListener('waiting', markBuffering);
+        video.addEventListener('stalled', markBuffering);
+        video.addEventListener('playing', clearBuffering);
+        video.addEventListener('canplay', clearBuffering);
+        video.addEventListener('pause', clearBuffering);
+
+        return () => {
+            video.removeEventListener('loadstart', markLoading);
+            video.removeEventListener('waiting', markLoading);
+            video.removeEventListener('loadedmetadata', clearLoading);
+            video.removeEventListener('loadeddata', clearLoading);
+            video.removeEventListener('canplay', clearLoading);
+            video.removeEventListener('playing', clearLoading);
+            video.removeEventListener('pause', clearLoading);
+            video.removeEventListener('error', clearLoading);
+            video.removeEventListener('waiting', markBuffering);
+            video.removeEventListener('stalled', markBuffering);
+            video.removeEventListener('playing', clearBuffering);
+            video.removeEventListener('canplay', clearBuffering);
+            video.removeEventListener('pause', clearBuffering);
+        };
+    }, [open, videoError, videoSource.type, videoSource.src, viewMode]);
+
+    const fetchExistingShareLinks = async (id: string) => {
+        try {
+            const res = await fetch(`/api/tasks/${id}/share`);
+            const data = await res.json();
+            if (res.ok && data.links?.length > 0) setShareLink(data.links[0].shareUrl);
+        } catch {/* silent */ }
+    };
+
+    /* ── Lock scroll ── */
+    useEffect(() => {
+        document.body.style.overflow = open ? 'hidden' : 'unset';
+        return () => { document.body.style.overflow = 'unset'; };
+    }, [open]);
+
+    /* ── Keyboard shortcuts (desktop only) ── */
+    useEffect(() => {
+        if (viewMode !== 'desktop') return;
+        const isTypingTarget = (target: EventTarget | null) => {
+            const el = target as HTMLElement | null;
+            if (!el) return false;
+            const tag = el.tagName;
+            return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+        };
+        const handler = (e: KeyboardEvent) => {
+            if (!open || showCommentInput || isDragging) return;
+            // Don't hijack keystrokes while the user is typing anywhere —
+            // the comment box, the posting-title field, etc. Without this,
+            // pressing space to type a space-character toggles playback
+            // instead of being typed.
+            if (isTypingTarget(e.target)) return;
+            switch (e.key) {
+                case ' ': e.preventDefault(); togglePlay(); break;
+                case 'Escape': onOpenChange(false); break;
+                case 'j': case 'J': case 'ArrowLeft': e.preventDefault(); seekBackward(); break;
+                case 'k': case 'K': e.preventDefault(); togglePlay(); break;
+                case 'l': case 'L': case 'ArrowRight': e.preventDefault(); seekForward(); break;
+                case 'm': case 'M': e.preventDefault(); toggleMute(); break;
+                case 'c': case 'C': e.preventDefault(); setShowCommentInput(true); break;
+            }
+        };
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+    }, [open, showCommentInput, isDragging, viewMode]);
+
+    /* ── Video controls ── */
+    const togglePlay = useCallback(() => {
+        if (videoSource.type === 'youtube') {
+            if (isPlaying) youtubePlayerRef.current?.pause();
+            else youtubePlayerRef.current?.play();
+            return;
+        }
+        const video = videoRef.current;
+        if (!video) return;
+
+        if (video.paused) {
+            video.play().catch(err => {
+                if (err.name !== 'AbortError') console.error('Video play failed:', err);
+            });
+        } else {
+            video.pause();
+        }
+    }, [videoSource.type, isPlaying]);
+
+
+    const toggleMute = useCallback(() => {
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.setMuted(!isMuted);
+            setIsMuted(!isMuted);
+            return;
+        }
+        if (!videoRef.current) return;
+        videoRef.current.muted = !isMuted;
+        setIsMuted(!isMuted);
+    }, [isMuted, videoSource.type]);
+
+    // Dragging the slider above 0 while muted un-mutes (matches every other
+    // media player); dragging it to 0 mutes instead of just silently
+    // playing at 0 volume, so the icon stays in sync with reality.
+    const handleVolumeChange = useCallback((next: number) => {
+        setVolume(next);
+        const shouldMute = next === 0;
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.setVolume(next);
+            youtubePlayerRef.current?.setMuted(shouldMute);
+        } else if (videoRef.current) {
+            videoRef.current.volume = next / 100;
+            videoRef.current.muted = shouldMute;
+        }
+        setIsMuted(shouldMute);
+    }, [videoSource.type]);
+
+    const seekBackward = useCallback(() => {
+        const target = Math.max(0, currentTime - 10);
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.seekTo(target);
+            setCurrentTime(target);
+            return;
+        }
+        if (videoRef.current) videoRef.current.currentTime = target;
+    }, [currentTime, videoSource.type]);
+
+    const seekForward = useCallback(() => {
+        const target = Math.min(duration, currentTime + 10);
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.seekTo(target);
+            setCurrentTime(target);
+            return;
+        }
+        if (videoRef.current) videoRef.current.currentTime = target;
+    }, [duration, currentTime, videoSource.type]);
+
+    const handleTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+        const time = e.currentTarget.currentTime;
+        if (Math.abs(time - lastTimeUpdateRef.current) >= 0.15 || time === 0 || time === duration) {
+            setCurrentTime(time);
+            lastTimeUpdateRef.current = time;
+        }
+    };
+
+    const handleSeek = useCallback((time: number) => {
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.seekTo(time);
+            setCurrentTime(time);
+            lastTimeUpdateRef.current = time;
+            return;
+        }
+        if (videoRef.current) {
+            videoRef.current.currentTime = time;
+            setCurrentTime(time);
+            lastTimeUpdateRef.current = time;
+        }
+    }, [videoSource.type]);
+
+    const handlePlaybackSpeedChange = (speed: string) => {
+        const s = parseFloat(speed);
+        setPlaybackSpeed(s);
+        if (videoSource.type === 'youtube') {
+            youtubePlayerRef.current?.setPlaybackRate(s);
+            return;
+        }
+        if (videoRef.current) videoRef.current.playbackRate = s;
+    };
+
+    const handleYoutubeReady = useCallback(() => {
+        // Apply whatever playback speed/volume/mute state was already
+        // selected (e.g. from a previous version's source) to the newly
+        // mounted player.
+        youtubePlayerRef.current?.setPlaybackRate(playbackSpeed);
+        youtubePlayerRef.current?.setVolume(volume);
+        youtubePlayerRef.current?.setMuted(isMuted);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const handleVersionChange = (versionId: string) => {
+        if (!asset) return;
+        const ver = asset.versions.find(v => v.id === versionId);
+        if (ver?.url) {
+            setCurrentVersion(versionId);
+            setCurrentVideoUrl(ver.url);
+            setIsPlaying(false);
+            setCurrentTime(0);
+            setDuration(0);
+            setMeasuredResolution('');
+            setVideoError(false);
+            setIframeLoaded(false);
+        }
+    };
+
+    const formatTime = (time: number) => {
+        const m = Math.floor(time / 60);
+        const s = Math.floor(time % 60);
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
+
+    /* ── Comment handlers ── */
+    const handleCommentSubmit = async (comment: Omit<ReviewComment, 'id' | 'createdAt'>) => {
+        const tempId = Date.now().toString();
+        const newComment: ReviewComment = {
+            ...comment,
+            authorRole: comment.authorRole ?? userRole,
+            id: tempId,
+            createdAt: new Date(),
+            version: currentVersionNumber,
+        };
+        // Optimistic UI update
+        setComments(prev => [...prev, newComment]);
+        setShowCommentInput(false);
+
+        // Immediate background persistence to database
+        const id = taskId || asset?.id;
+        if (!id) return;
+        try {
+            const ver = asset?.versions.find(v => parseInt(v.number) === currentVersionNumber);
+            const res = await fetch(`/api/tasks/${id}/feedback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    folderType: currentFileSection?.folderType || 'main',
+                    fileId: ver?.id || currentFileSection?.fileId || null,
+                    feedback: comment.content,
+                    timestamp: comment.timestamp || '0:00',
+                    category: Array.isArray(comment.category) ? comment.category.join(',') : comment.category,
+                    createdBy: user?.id || 0,
+                    screenshotUrl: (comment as any).screenshotUrl || null,
+                    annotations: (comment as any).annotations || null,
+                    voiceUrl: (comment as any).voiceUrl || null,
+                    voiceDurationSec: (comment as any).voiceDurationSec || null,
+                    attachments: (comment as any).attachments || null,
+                }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.feedback?.id) {
+                    setComments(prev => prev.map(c => c.id === tempId ? {
+                        ...c,
+                        id: data.feedback.id,
+                        authorId: String(data.feedback.user?.id || data.feedback.createdBy || user?.id || 0),
+                        authorName: data.feedback.user?.name || user?.name || 'Member',
+                        authorRole: data.feedback.user?.role || userRole,
+                    } : c));
+                }
+            } else {
+                toast.error('Failed to save comment to server');
+            }
+        } catch (err) {
+            console.error('Error saving comment:', err);
+            toast.error('Failed to save comment to server');
+        }
+    };
+
+    const handleCommentResolve = useCallback(async (id: string, resolved: boolean) => {
+        setComments(prev => prev.map(c => c.id === id ? { ...c, resolved } : c));
+        const targetTaskId = taskId || asset?.id;
+        if (targetTaskId && !/^\d{13}$/.test(id)) {
+            try {
+                await fetch(`/api/tasks/${targetTaskId}/feedback?feedbackId=${id}&action=${resolved ? 'resolve' : 'delete'}`, {
+                    method: 'DELETE',
+                });
+            } catch (err) {
+                console.error('Error resolving feedback:', err);
+            }
+        }
+    }, [taskId, asset?.id]);
+
+    const handleCommentDelete = useCallback(async (id: string) => {
+        setComments(prev => prev.filter(c => c.id !== id));
+        const targetTaskId = taskId || asset?.id;
+        if (targetTaskId && !/^\d{13}$/.test(id)) {
+            try {
+                await fetch(`/api/tasks/${targetTaskId}/feedback?feedbackId=${id}`, {
+                    method: 'DELETE',
+                });
+            } catch (err) {
+                console.error('Error deleting feedback:', err);
+            }
+        }
+    }, [taskId, asset?.id]);
+
+    const handleCommentEdit = useCallback(async (id: string, newContent: string) => {
+        // Update local state immediately
+        setComments(prev => prev.map(c => c.id === id ? { ...c, content: newContent } : c));
+
+        // If it's a real database ID (numerical or UUID, not a Date.now() string), persist it
+        // Note: Our temporary IDs are Date.now().toString(), but database IDs are usually UUIDs
+        // Alternatively, we can just try to update it and ignore if it's not found (unsaved session comments)
+        const isPersisted = id.length > 15; // Simple heuristic for UUID vs Date.now() string
+
+        if (isPersisted) {
+            try {
+                const res = await fetch(`/api/tasks/${taskId || asset?.id}/feedback`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ feedbackId: id, feedback: newContent }),
+                });
+                if (!res.ok) throw new Error('Failed to persist edit');
+            } catch (error) {
+                console.error('Error persisting comment edit:', error);
+                toast.error('Failed to save edit to server');
+            }
+        }
+    }, [taskId, asset?.id]);
+
+    const handleTimestampClick = useCallback((ts: number) => {
+        handleSeek(ts);
+        const c = comments.find(c => c.timestampSeconds === ts);
+        if (c) setActiveCommentId(c.id);
+    }, [comments, handleSeek]);
+
+    // Jumping to a client comment from the "all versions" dropdown may require
+    // switching versions first, since each version is a separate video source.
+    const handleJumpToClientComment = useCallback((comment: ReviewComment) => {
+        const targetVersionNumber = comment.version ?? 1;
+        if (targetVersionNumber !== currentVersionNumber) {
+            const targetVersion = asset?.versions.find(v => Number(v.number) === targetVersionNumber);
+            if (targetVersion) handleVersionChange(targetVersion.id);
+        }
+        handleSeek(comment.timestampSeconds);
+        setActiveCommentId(comment.id);
+    }, [asset?.versions, currentVersionNumber, handleVersionChange, handleSeek]);
+
+    const handleMarkerClick = useCallback((comment: ReviewComment) => {
+        handleSeek(comment.timestampSeconds);
+        setActiveCommentId(comment.id);
+        setTimeout(() => {
+            const el = document.getElementById(`comment-${comment.id}`);
+            if (el && commentsRef.current) commentsRef.current.scrollTo({ top: el.offsetTop - 100, behavior: 'smooth' });
+        }, 100);
+    }, [handleSeek]);
+
+    /* ── Save feedback ── */
+    const saveFeedbackToDatabase = async (feedbackComments: ReviewComment[]) => {
+        const id = taskId || asset?.id;
+        if (!id) return false;
+        if (!user?.id && !shareToken) return false;
+        try {
+            setSavingFeedback(true);
+            
+            // Only send comments that haven't been saved yet
+            // DB IDs are CUIDs (start with 'c' and are ~25 chars), local IDs are Date.now() strings (numeric, ~13 chars)
+            const unsavedComments = feedbackComments.filter(c => {
+                // Check if this is a local (unsaved) comment
+                const isLocalId = /^\d+$/.test(c.id) && c.id.length < 20;
+                return isLocalId && !c.resolved;
+            });
+            
+            if (unsavedComments.length === 0) {
+                console.log('✅ No new comments to save');
+                return true;
+            }
+            
+            const items = unsavedComments.map(c => {
+                const ver = asset?.versions.find(v => parseInt(v.number) === (c.version || currentVersionNumber));
+                return {
+                    folderType: currentFileSection?.folderType || 'main',
+                    fileId: ver?.id || currentFileSection?.fileId || null,
+                    feedback: c.content,
+                    timestamp: c.timestamp,
+                    category: Array.isArray(c.category) ? c.category.join(',') : c.category,
+                };
+            });
+            
+            console.log(`💾 Saving ${items.length} new comments (${feedbackComments.length - unsavedComments.length} already saved)`);
+            
+            const res = await fetch(`/api/tasks/${id}/feedback`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ feedbackItems: items, createdBy: user?.id || 0, shareToken }),
+            });
+            if (!res.ok) throw new Error('Failed to save feedback');
+            return true;
+        } catch {
+            toast.error('Failed to save feedback');
+            return false;
+        } finally {
+            setSavingFeedback(false);
+        }
+    };
+
+    /* ── Status change ── */
+    const handleStatusChange = async (
+        status: ReviewStatus['value'],
+        opts?: { sendToClient?: boolean },
+    ) => {
+        if (!asset) return;
+        // Prevent double-submit
+        if (savingFeedback) return;
+
+        if (status === 'approved') {
+            if (userRole === 'qc' && onSendToClient) onSendToClient(asset, opts);
+            else onApprove(asset, true);
+            setShowApprovalSuccess(true);
+            scheduleCloseAfterSuccess(() => setShowApprovalSuccess(false));
+        } else if (status === 'needs_changes') {
+            const saved = await saveFeedbackToDatabase(comments);
+            if (!saved) { toast.error('Failed to save feedback. Please try again.'); return; }
+            const label = currentFileSection?.folderType?.toUpperCase() || 'MAIN';
+            const ver = currentFileSection?.version || 1;
+            const isFinalRevisionRequest = finalRevisionRef.current && userRole === 'client';
+            finalRevisionRef.current = false;
+            const revisionData: RevisionRequest = {
+                reason: 'other',
+                finalRevision: isFinalRevisionRequest,
+                // sortedComments, not comments — scoped to the version
+                // currently being reviewed, so an old rejected round's
+                // comments (now visible again above) don't bleed into
+                // this new rejection's message.
+                // General comments are notes only — they never go out as revisions.
+                notes: sortedComments.filter(c => !c.resolved && !c.isGeneral).map(c => `[${label} v${ver} @ ${c.timestamp}] ${c.content}`).join('\n\n'),
+                assignTo: 'editor',
+                entries: sortedComments.filter(c => !c.resolved && !c.isGeneral).map(c => ({
+                    id: c.id,
+                    timestamp: new Date().toLocaleTimeString(),
+                    reason: (Array.isArray(c.category) ? c.category.join(', ') : c.category) as any,
+                    notes: c.content,
+                    videoTime: c.timestamp,
+                })),
+            };
+            if (userRole === 'qc' && onSendBackToEditor) onSendBackToEditor(asset, revisionData);
+            else onRequestRevisions(asset, revisionData);
+            setShowRevisionSuccess(true);
+            scheduleCloseAfterSuccess(() => setShowRevisionSuccess(false));
+        }
+    };
+
+    /* ── Reject with typed comment (mobile reject dialog) ── */
+    const handleRejectWithComment = async (commentText: string) => {
+        if (!asset) return;
+        const id = taskId || asset.id;
+        const label = currentFileSection?.folderType?.toUpperCase() || 'MAIN';
+        const ver = currentFileSection?.version || 1;
+
+        // Build a single feedback item from the typed comment
+        const feedbackItem = {
+            folderType: currentFileSection?.folderType || 'main',
+            fileId: currentFileSection?.fileId || null,
+            feedback: commentText.trim(),
+            timestamp: '0:00',
+            category: 'other',
+        };
+
+        try {
+            setSavingFeedback(true);
+            if (user?.id || shareToken) {
+                const res = await fetch(`/api/tasks/${id}/feedback`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ feedbackItems: [feedbackItem], createdBy: user?.id || 0, shareToken }),
+                });
+                if (!res.ok) throw new Error('Failed to save feedback');
+            }
+            // Also save existing unresolved comments
+            if (comments.filter(c => !c.resolved).length > 0) {
+                await saveFeedbackToDatabase(comments);
+            }
+
+            const isFinalRevision = finalRevisionRef.current && userRole === 'client';
+            finalRevisionRef.current = false;
+            const revisionData: RevisionRequest = {
+                reason: 'other',
+                notes: `[${label} v${ver}] ${commentText.trim()}`,
+                assignTo: 'editor',
+                finalRevision: isFinalRevision,
+                entries: [{
+                    id: Date.now().toString(),
+                    timestamp: new Date().toLocaleTimeString(),
+                    reason: 'other',
+                    notes: commentText.trim(),
+                    videoTime: '0:00',
+                }],
+            };
+            if (userRole === 'qc' && onSendBackToEditor) onSendBackToEditor(asset, revisionData);
+            else onRequestRevisions(asset, revisionData);
+            setShowRevisionSuccess(true);
+            scheduleCloseAfterSuccess(() => setShowRevisionSuccess(false));
+        } catch {
+            toast.error('Failed to send feedback. Please try again.');
+        } finally {
+            setSavingFeedback(false);
+        }
+    };
+
+    /* ── Share ── */
+    const handleGenerateShareLink = async () => {
+        const id = taskId || asset?.id;
+        if (!id) { toast.error('Unable to generate share link'); return; }
+        try {
+            setGeneratingLink(true);
+            setLinkCopied(false);
+            const res = await fetch(`/api/tasks/${id}/share`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expiresInDays: 0 }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to generate share link');
+            setShareLink(data.shareUrl);
+            setShowShareDialog(true);
+            setShowInfoPanel(true);
+            try {
+                await navigator.clipboard.writeText(data.shareUrl);
+                setLinkCopied(true);
+                setTimeout(() => setLinkCopied(false), 3000);
+                toast.success('Share link generated and copied!');
+            } catch {
+                toast.success('Share link generated!');
+            }
+        } catch (err: any) {
+            toast.error(err.message || 'Failed to generate share link');
+        } finally {
+            setGeneratingLink(false);
+        }
+    };
+
+    const handleCopyLink = async () => {
+        try {
+            await navigator.clipboard.writeText(shareLink);
+            setLinkCopied(true);
+            toast.success('Link copied!');
+            setTimeout(() => setLinkCopied(false), 3000);
+        } catch {
+            toast.error('Failed to copy link');
+        }
+    };
+
+    const handleDownload = async () => {
+        if (!asset) return;
+        try {
+            // Use the download API for S3 files — generates a presigned URL
+            // and redirects the browser's native download manager (full speed)
+            const fileId = currentVersion || asset.currentVersion;
+            const isS3 = asset.videoUrl?.includes('amazonaws.com') || asset.videoUrl?.includes('r2.cloudflarestorage.com') || asset.videoUrl?.includes('r2.dev');
+
+            if (isS3 && fileId) {
+                // Open in new tab — browser will redirect to presigned S3 download URL
+                window.open(`/api/files/${fileId}/download`, '_blank');
+                toast.success('Download started');
+            } else {
+                // Fallback for non-S3 files (Google Drive, etc.)
+                const a = document.createElement('a');
+                a.href = asset.videoUrl;
+                a.download = `${asset.title.replace(/\s+/g, '_')}_V${asset.currentVersion}.mp4`;
+                a.target = '_blank';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                toast.success('Download started');
+            }
+        } catch {
+            toast.error('Failed to start download');
+        }
+    };
+
+    /* ── Guard ── */
+    if (!asset) return null;
+
+    /* ── Shared props object ── */
+    const screenProps = {
+        asset,
+        currentFileSection,
+        userRole,
+        requiresClientReview,
+        forceClientReviewOverride,
+        onForceClientReviewOverrideChange,
+        postingTitles,
+        postingDescriptions,
+        postingTags,
+        onPostingTitlesChange: onPostingTitlesChange ?? (() => {}),
+        onPostingDescriptionsChange: onPostingDescriptionsChange ?? (() => {}),
+        onPostingTagsChange: onPostingTagsChange ?? (() => {}),
+        templateHashtags,
+        videoRef,
+        iframeRef,
+        youtubePlayerRef,
+        handleYoutubeReady,
+        containerRef,
+        commentsRef,
+        videoSource,
+        isPlaying,
+        isMuted,
+        volume,
+        currentTime,
+        duration,
+        playbackSpeed,
+        currentVersion,
+        measuredResolution,
+        videoError,
+        iframeLoaded,
+        isVideoLoading,
+        isDragging,
+        comments,
+        sortedComments,
+        allClientComments,
+        activeCommentId,
+        showCommentInput,
+        confirmFinal,
+        savingFeedback,
+        showApprovalSuccess,
+        showRevisionSuccess,
+        showInfoPanel,
+        shareLink,
+        generatingLink,
+        linkCopied,
+        showShareDialog,
+        connectionInsight,
+        userName: user?.name || 'You',
+        currentVersionNumber,
+        isClientViewer,
+        togglePlay,
+        toggleMute,
+        onVolumeChange: handleVolumeChange,
+        seekBackward,
+        seekForward,
+        handleSeek,
+        handleTimeUpdate,
+        handlePlaybackSpeedChange,
+        handleVersionChange,
+        handleMarkerClick,
+        handleTimestampClick,
+        onJumpToClientComment: handleJumpToClientComment,
+        handleCommentSubmit,
+        handleCommentResolve,
+        handleCommentDelete,
+        handleCommentEdit,
+        handleStatusChange,
+        setShowCommentInput,
+        setConfirmFinal,
+        setShowInfoPanel,
+        setShowShareDialog,
+        setVideoError,
+        handleVideoError,
+        setIframeLoaded,
+        setIsDragging,
+        setIsPlaying,
+        setDuration,
+        setMeasuredResolution,
+        setCurrentTime,
+        handleDownload,
+        handleGenerateShareLink,
+        handleCopyLink,
+        onOpenChange,
+        onNextAsset,
+        onSwitchToThumbnail,
+        formatTime,
+        onSwitchToMobile: () => setViewMode('mobile'),
+        onSwitchToDesktop: () => setViewMode('desktop'),
+        handleRejectWithComment,
+        allowFinalRevision: allowFinalRevision && userRole === 'client' && !shareToken,
+        onRequestFinalRevision: () => setShowFinalRevisionConfirm(true),
+        finalRevisionLocked: finalRevisionLocked && userRole === 'qc',
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className={`!fixed !inset-0 !z-50 !w-full !h-full !max-w-none !max-h-none !m-0 !p-0 !overflow-hidden !transform-none !top-0 !left-0 !right-0 !bottom-0 !translate-x-0 !translate-y-0 !rounded-none !border-none !shadow-none fullscreen-dialog review-modal ${viewMode === 'mobile' ? '!overflow-y-auto' : '!overflow-hidden'}`}>
+                {/* Accessibility */}
+                <div className="sr-only">
+                    <DialogTitle>{asset.title ? `Review ${asset.title}` : 'Asset Review'}</DialogTitle>
+                    <DialogDescription>Review and provide feedback on this video asset using time-coded comments.</DialogDescription>
+                </div>
+
+                {viewMode === 'desktop' ? (
+                    <ReviewScreenDesktop {...screenProps} />
+                ) : (
+                    <ReviewScreenMobile {...screenProps} />
+                )}
+
+                <FinalRevisionConfirmDialog
+                    open={showFinalRevisionConfirm}
+                    onOpenChange={setShowFinalRevisionConfirm}
+                    loading={savingFeedback}
+                    onConfirm={async () => {
+                        finalRevisionRef.current = true;
+                        setShowFinalRevisionConfirm(false);
+                        await handleStatusChange('needs_changes');
+                        // If saving failed above, don't leave the flag armed for a later plain "Request Revisions"
+                        finalRevisionRef.current = false;
+                    }}
+                />
+            </DialogContent>
+        </Dialog>
+    );
+}

@@ -1,0 +1,84 @@
+export const dynamic = 'force-dynamic';
+// app/api/logins/check-pin/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getDbHttp } from "@/lib/db";
+import { user as userTable, userSecurityPin } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+// import { getServerSession } from "next-auth";
+// import { authOptions } from "@/lib/auth";
+import jwt from "jsonwebtoken";
+
+function getTokenFromCookies(req: NextRequest): string | null {
+  const cookieHeader = req.headers.get("cookie");
+  if (!cookieHeader) return null;
+
+  const match = cookieHeader.match(/authToken=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+function verifyToken(token: string): { userId: number; role: string } | null {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+      userId: number;
+      role: string;
+    };
+    return decoded;
+  } catch (error) {
+    console.error("Token verification failed:", error);
+    return null;
+  }
+}
+
+export async function GET(req: NextRequest) {
+  const db = getDbHttp();
+  try {
+    const token = getTokenFromCookies(req);
+       
+       if (!token) {
+             return NextResponse.json(
+               { success: false, error: "Unauthorized - No token provided" },
+               { status: 401 }
+             );
+           }
+       
+           const decoded = verifyToken(token);
+       
+           if (!decoded) {
+             return NextResponse.json(
+               { success: false, error: "Unauthorized - Invalid token" },
+               { status: 401 }
+             );
+           }
+   
+           const { userId } = decoded;
+           
+               const [user] = await db.select({
+                 id: userTable.id,
+                 name: userTable.name,
+                 email: userTable.email,
+                 image: userTable.image,
+                 phone: userTable.phone,
+                 role: userTable.role,
+               }).from(userTable).where(eq(userTable.id, userId)).limit(1);
+
+               if (!user) {
+                 return NextResponse.json(
+                   { success: false, error: "User not found" },
+                   { status: 404 }
+                 );
+               }
+
+
+    // const userId = parseInt((session.user as any).id);
+
+    const [userPin] = await db.select().from(userSecurityPin).where(eq(userSecurityPin.userId, userId)).limit(1);
+
+    return NextResponse.json({ hasPin: !!userPin });
+  } catch (error) {
+    console.error("Failed to check PIN:", error);
+    return NextResponse.json(
+      { message: "Failed to check PIN" },
+      { status: 500 }
+    );
+  }
+}

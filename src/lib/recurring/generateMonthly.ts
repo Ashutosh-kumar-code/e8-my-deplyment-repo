@@ -1,0 +1,432 @@
+import { getDbHttp } from "@/lib/db";
+import {
+  task as taskTable,
+  client as clientTable,
+  monthlyDeliverable as monthlyDeliverableTable,
+  recurringTask as recurringTaskTable,
+  monthlyRun as monthlyRunTable,
+} from "@/lib/db/schema";
+import { createId } from "@/lib/db/id";
+import { and, eq } from "drizzle-orm";
+import { createTaskOutputFolder, getS3, BUCKET } from "@/lib/s3";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { assignRawFootageFolderForTask } from "@/lib/raw-footage-folders";
+import { getClientTaskSlug } from "@/lib/client-task-name";
+
+const s3Client = getS3();
+
+export function getDeliverableShortCode(type: string) {
+  const normalized = type.toLowerCase().trim();
+
+  console.log("Normalized deliverable type:", normalized);
+
+  if (normalized === "short form videos") return "SF";
+  if (normalized === "long form videos") return "LF";
+  if (normalized === "square form videos") return "SQF";
+  if (normalized === "thumbnails") return "THUMB";
+  if (normalized === "tiles") return "T";
+  if (normalized === "hard posts / graphic images") return "HP";
+  if (normalized === "snapchat episodes") return "SEP";
+  if (normalized === "beta short form") return "BSF";
+  if (normalized === "stories") return "ST";
+  if (normalized === "text post") return "TP";
+  // fallback: original slug behavior
+  return type.replace(/\s+/g, "");
+}
+
+// function formatDateYYYYMMDD(date: Date) {
+//   const year = date.getFullYear();
+//   const month = String(date.getMonth() + 1).padStart(2, "0");
+//   const day = String(date.getDate()).padStart(2, "0");
+//   return `${year}-${month}-${day}`;
+// }
+
+export function formatDateMMDDYYYY(date: Date) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const year = date.getFullYear();
+  return `${month}-${day}-${year}`;
+}
+
+
+// 🔥 Helper: Get month folder name from a date
+function getMonthFolderFromDate(date: Date): string {
+  const month = date.toLocaleDateString("en-US", { month: "long" });
+  const year = date.getFullYear();
+  return `${month}-${year}`; // "February-2026"
+}
+
+// 🔥 NEW: Create task folder structure in S3 (grouped by month)
+async function createTaskFolderStructure(
+  companyName: string,
+  taskTitle: string,
+  monthFolder: string
+): Promise<string> {
+  try {
+    // Monthly grouped path: CompanyName/outputs/Month-Year/TaskTitle/
+    const monthFolderPath = `${companyName}/outputs/${monthFolder}/`;
+    const taskFolderPath = `${monthFolderPath}${taskTitle}/`;
+
+    // Create month folder
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: monthFolderPath,
+        ContentType: "application/x-directory",
+      })
+    );
+
+    // Create main task folder
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: taskFolderPath,
+        ContentType: "application/x-directory",
+      })
+    );
+
+    // 🔥 Create ONLY special subfolders (NO "task" folder!)
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: `${taskFolderPath}thumbnails/`,
+        ContentType: "application/x-directory",
+      })
+    );
+
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: `${taskFolderPath}tiles/`,
+        ContentType: "application/x-directory",
+      })
+    );
+
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: BUCKET,
+        Key: `${taskFolderPath}music-license/`,
+        ContentType: "application/x-directory",
+      })
+    );
+
+    console.log("✅ Task folder structure created:", {
+      monthFolder: monthFolderPath,
+      main: taskFolderPath,
+      thumbnails: `${taskFolderPath}thumbnails/`,
+      tiles: `${taskFolderPath}tiles/`,
+      musicLicense: `${taskFolderPath}music-license/`,
+    });
+
+    return taskFolderPath;
+  } catch (error) {
+    console.error("❌ Failed to create task folder structure:", error);
+    throw error;
+  }
+}
+
+export async function generateMonthlyTasksFromTemplate(taskId: string, monthlyDeliverableId?: string) {
+  const db = getDbHttp();
+  // STEP 1 — Fetch template task
+  const [templateTask] = await db.select().from(taskTable).where(eq(taskTable.id, taskId)).limit(1);
+
+  if (!templateTask || !templateTask.clientId || !templateTask.dueDate) {
+    return { created: 0, error: "Invalid template task" };
+  }
+
+  const clientId = templateTask.clientId;
+
+  // STEP 2 — Fetch client + deliverable
+  const client = await db.query.client.findFirst({
+    where: eq(clientTable.id, clientId),
+    with: { monthlyDeliverables: true },
+  });
+
+  // Preserves Prisma's undefined-filter semantics: when monthlyDeliverableId
+  // is undefined, Prisma dropped that condition entirely (matching the first
+  // deliverable for the client), rather than matching nothing.
+  const deliverableConditions = [eq(monthlyDeliverableTable.clientId, clientId)];
+  if (monthlyDeliverableId !== undefined) {
+    deliverableConditions.push(eq(monthlyDeliverableTable.id, monthlyDeliverableId));
+  }
+  const [deliverable] = await db
+    .select()
+    .from(monthlyDeliverableTable)
+    .where(and(...deliverableConditions))
+    .limit(1);
+
+  if (!deliverable) {
+    console.error("❌ Deliverable not found for ID:", monthlyDeliverableId);
+    return { created: 0, error: "Deliverable not found" };
+  }
+
+  if (!client || !client.monthlyDeliverables.length) {
+    return { created: 0, error: "No deliverable found" };
+  }
+
+  const quantity = deliverable.quantity ?? 1;
+  const videosPerDay = deliverable.videosPerDay ?? 1;
+  const postingDays = deliverable.postingDays ?? [];
+
+  // STEP 3 — Month boundaries (start from template task's due date)
+  const firstDate = new Date(templateTask.dueDate);
+  const monthEnd = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0);
+
+  const WEEKDAY: Record<string, number> = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  };
+
+  const validDays = postingDays
+    .map((d) => WEEKDAY[d as keyof typeof WEEKDAY])
+    .filter((v) => v !== undefined);
+
+  // STEP 4 — Build posting date list
+  // 🔥 FIX: Start from firstDate (template's due date), not monthStart
+  // 🔥 FIX: If postingDays is empty, use ALL days
+  const dates: Date[] = [];
+  const cursor = new Date(firstDate);
+
+  while (cursor <= monthEnd) {
+    // If no specific posting days configured, use ALL days
+    if (validDays.length === 0 || validDays.includes(cursor.getDay())) {
+      dates.push(new Date(cursor));
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  // 🔥 DEBUG LOGGING
+  console.log("=== TASK GENERATION DEBUG ===");
+  console.log("quantity:", quantity);
+  console.log("videosPerDay:", videosPerDay);
+  console.log("postingDays:", postingDays);
+  console.log("validDays (weekday numbers):", validDays);
+  console.log("firstDate:", firstDate.toDateString());
+  console.log("monthEnd:", monthEnd.toDateString());
+  console.log("dates array length:", dates.length);
+  console.log("dates sample:", dates.slice(0, 5).map(d => d.toDateString()));
+
+  // 🔥 SAFEGUARD: If no dates, use all remaining days in month
+  if (dates.length === 0) {
+    console.warn("⚠️ No valid posting dates found! Using all remaining days.");
+    const fallbackCursor = new Date(firstDate);
+    while (fallbackCursor <= monthEnd) {
+      dates.push(new Date(fallbackCursor));
+      fallbackCursor.setDate(fallbackCursor.getDate() + 1);
+    }
+  }
+
+  // Calculate tasks per day to spread evenly
+  const daysAvailable = dates.length;
+  const tasksPerDay = Math.max(1, Math.ceil(quantity / daysAvailable));
+
+  console.log("daysAvailable:", daysAvailable);
+  console.log("calculated tasksPerDay:", tasksPerDay);
+  console.log("=============================");
+
+  // STEP 5 — Naming parts
+  const companyName = client?.companyName || client.name;
+  const companyNameSlug = getClientTaskSlug(client);
+  const deliverableSlug = getDeliverableShortCode(deliverable.type);
+  const createdAtStr = formatDateMMDDYYYY(new Date(templateTask.createdAt));
+
+  // STEP 6 — Update template task with title and folder (Task #1)
+  let count = 1;
+  const title1 = `${companyNameSlug}_${createdAtStr}_${deliverableSlug}${count}`;
+
+  // 🔥 DUPLICATE PREVENTION: Check if a task with this exact title already exists
+  // This prevents duplicate task names when monthly generation is re-triggered
+  const [existingWithTitle1] = await db
+    .select()
+    .from(taskTable)
+    .where(and(
+      eq(taskTable.clientId, clientId),
+      eq(taskTable.title, title1),
+    ))
+    .limit(1);
+
+  if (existingWithTitle1) {
+    console.warn(`⚠️ Task with title "${title1}" already exists. Skipping generation to prevent duplicates.`);
+    return { created: 0, error: `Task "${title1}" already exists for this month` };
+  }
+
+  // 🔥 Create folder structure for template task (grouped by month)
+  const monthFolder = getMonthFolderFromDate(firstDate);
+  const taskFolderPath1 = await createTaskFolderStructure(companyName, title1, monthFolder);
+
+  // 🔥 FIX: Tag the template task with recurringMonth so duplicate prevention works
+  const recurringMonthLabel = `${firstDate.getFullYear()}-${String(firstDate.getMonth() + 1).padStart(2, "0")}`;
+
+  await db.update(taskTable).set({
+    title: title1,
+    outputFolderId: taskFolderPath1,
+    recurringMonth: recurringMonthLabel,
+    monthFolder,
+    deliverableType: deliverableSlug,
+    requiresClientReview: client.requiresClientReview,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(taskTable.id, taskId));
+
+  // Scripting feature — auto-numbered raw-footage folder (SF1/LF1/...) for
+  // this deliverable task, using the SAME sequential `count` already used
+  // in the task title above so folder numbering and task naming never
+  // drift apart. No-op for non-SF/LF deliverable types. Never throws —
+  // a folder-creation hiccup must not break monthly task generation.
+  await assignRawFootageFolderForTask({
+    clientId,
+    companyName,
+    monthFolder,
+    deliverableSlug,
+    deliverableType: deliverable.type,
+    number: count,
+    taskId,
+  });
+
+  // Scripts are created/linked manually (Script Linking panel) — never
+  // auto-created here even when Client.scriptsRequired is true.
+
+  // ─────────────────────────────────────────
+  // 🔥 ENSURE RECURRING TASK TRACKER IS UPDATED
+  // ─────────────────────────────────────────
+  const [existingRecurring] = await db
+    .select()
+    .from(recurringTaskTable)
+    .where(and(eq(recurringTaskTable.clientId, clientId), eq(recurringTaskTable.deliverableId, deliverable.id)))
+    .limit(1);
+
+  if (existingRecurring) {
+    await db.update(recurringTaskTable).set({
+      templateTaskId: taskId, // Update to the newest blueprint
+    }).where(eq(recurringTaskTable.id, existingRecurring.id));
+    console.log(`✅ Updated existing RecurringTask ${existingRecurring.id} with new template ${taskId}`);
+  } else {
+    // Determine next month's start for the tracker
+    const now = new Date();
+    const nextMonth = now.getMonth() === 11 ? 0 : now.getMonth() + 1;
+    const nextYear = now.getMonth() === 11 ? now.getFullYear() + 1 : now.getFullYear();
+    const nextRunDate = new Date(nextYear, nextMonth, 1);
+
+    const [newRecurring] = await db.insert(recurringTaskTable).values({
+      id: createId(),
+      clientId: clientId,
+      deliverableId: deliverable.id,
+      templateTaskId: taskId,
+      active: true,
+      nextRunDate: nextRunDate.toISOString(),
+      scheduleType: deliverable.postingSchedule || "monthly",
+    }).returning();
+    console.log(`✅ Created NEW RecurringTask ${newRecurring.id} for deliverable ${deliverable.id}`);
+  }
+  console.log(`✅ Template task (#1) updated: ${title1}`);
+
+  // STEP 7 — Create remaining tasks (starting from #2)
+  const creates = [];
+  let dateIndex = 0;
+  let daySlot = 1; // Start at slot 1 because template took slot 0
+
+  // 🔥 FIX: Loop until we have created all tasks (quantity - 1, since template is task #1)
+  while (count < quantity && dateIndex < dates.length) {
+    const date = dates[dateIndex];
+
+    // Create tasks for remaining slots on this day
+    while (daySlot < tasksPerDay && count < quantity) {
+      count++;
+      const taskNumber = count; // snapshot — `count` keeps mutating through
+                                  // the loop, but the .then() below fires
+                                  // later (after Promise.all), so it must
+                                  // close over this task's own number, not
+                                  // whatever `count` ends up being by then.
+      const title = `${companyNameSlug}_${createdAtStr}_${deliverableSlug}${taskNumber}`;
+
+      // 🔥 DUPLICATE PREVENTION: Check if this title already exists
+      const [existingTask] = await db
+        .select()
+        .from(taskTable)
+        .where(and(
+          eq(taskTable.clientId, clientId),
+          eq(taskTable.title, title),
+        ))
+        .limit(1);
+
+      if (existingTask) {
+        console.warn(`⚠️ Task "${title}" already exists. Skipping to prevent duplicates.`);
+        daySlot++;
+        continue;
+      }
+
+      // Create folder structure for this task (grouped by month)
+      const taskFolderPath = await createTaskFolderStructure(companyName, title, monthFolder);
+      const newTaskId = createId();
+
+      creates.push(
+        db.insert(taskTable).values({
+          id: newTaskId,
+          title,
+          description: templateTask.description,
+          taskType: templateTask.taskType,
+          status: "PENDING",
+          dueDate: date.toISOString(),
+          outputFolderId: taskFolderPath,
+          clientId: clientId,
+          clientUserId: client?.userId,
+          assignedTo: templateTask.assignedTo,
+          createdBy: templateTask.createdBy,
+          scheduler: templateTask.scheduler,
+          videographer: templateTask.videographer,
+          qcSpecialist: templateTask.qcSpecialist,
+          monthlyDeliverableId: templateTask.monthlyDeliverableId,
+          // 🔥 FIX: Tag with recurringMonth so duplicate prevention works
+          recurringMonth: recurringMonthLabel,
+          monthFolder,
+          deliverableType: deliverableSlug,
+          requiresClientReview: client.requiresClientReview,
+          updatedAt: new Date().toISOString(),
+        }).then(() => assignRawFootageFolderForTask({
+          clientId,
+          companyName,
+          monthFolder,
+          deliverableSlug,
+          deliverableType: deliverable.type,
+          number: taskNumber,
+          taskId: newTaskId,
+        }))
+      );
+
+      console.log(`   📝 Queued task #${taskNumber}: ${title} (Due: ${date.toDateString()})`);
+      daySlot++;
+    }
+
+    // Move to next day
+    dateIndex++;
+    daySlot = 0; // Reset slot counter for new day
+  }
+
+  // Execute all creates
+  if (creates.length > 0) {
+    await Promise.all(creates);
+  }
+
+  console.log(`✅ Created ${creates.length} additional tasks (Total: ${count} tasks)`);
+
+  // 📝 LOG THE SUCCESSFUL RUN
+  try {
+    const runDate = new Date(templateTask.dueDate);
+    await db.insert(monthlyRunTable).values({
+      id: createId(),
+      clientId: clientId,
+      month: runDate.getMonth() + 1, // 1-based month
+      year: runDate.getFullYear(),
+      runAt: new Date().toISOString(),
+    });
+    console.log(`📊 Logged MonthlyRun for ${clientId} (${runDate.getMonth() + 1}/${runDate.getFullYear()})`);
+  } catch (error) {
+    console.error("⚠️ Failed to log MonthlyRun:", error);
+  }
+
+  return { created: creates.length };
+}

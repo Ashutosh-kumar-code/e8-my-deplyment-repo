@@ -1,0 +1,325 @@
+export const dynamic = 'force-dynamic';
+
+import { NextRequest, NextResponse } from 'next/server';
+import { PutObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { getDbHttp } from '@/lib/db';
+import { client as clientTable, task as taskTable } from '@/lib/db/schema';
+import { eq, isNotNull, and, desc, count } from 'drizzle-orm';
+import { getS3, BUCKET } from '@/lib/s3';
+import { requireAdmin } from '@/lib/auth';
+import { getDeliverableFolderName } from '@/lib/deliverable-folder-name';
+import { getDeliverableShortCode } from '@/lib/recurring/generateMonthly';
+
+const s3 = getS3();
+
+// ─── Folder existence, via one listing per parent folder ─────────────────────
+// Used to HeadObject + List every expected folder one by one — thousands of
+// R2 calls per scan across all clients, which blows past the Worker's
+// subrequest/CPU limits and comes back as a 503. Now each parent folder is
+// listed ONCE (Delimiter '/', so its direct subfolders come back as
+// CommonPrefixes) and every child is answered from that cached listing. A
+// folder whose parent is missing is missing too, so its children cost nothing.
+class FolderIndex {
+  private children = new Map<string, Promise<Set<string>>>();
+  private exists_ = new Map<string, Promise<boolean>>();
+
+  // Direct children (subfolders + marker/files) of a prefix ('' = bucket root).
+  private list(prefix: string): Promise<Set<string>> {
+    let p = this.children.get(prefix);
+    if (!p) {
+      p = (async () => {
+        const out = new Set<string>();
+        let token: string | undefined;
+        do {
+          const res = await s3.send(new ListObjectsV2Command({
+            Bucket: BUCKET,
+            Prefix: prefix,
+            Delimiter: '/',
+            ContinuationToken: token,
+          }));
+          res.CommonPrefixes?.forEach(c => c.Prefix && out.add(c.Prefix));
+          res.Contents?.forEach(o => o.Key && out.add(o.Key));
+          token = res.IsTruncated ? res.NextContinuationToken : undefined;
+        } while (token);
+        return out;
+      })();
+      this.children.set(prefix, p);
+    }
+    return p;
+  }
+
+  has(key: string): Promise<boolean> {
+    const prefix = key.endsWith('/') ? key : `${key}/`;
+    let p = this.exists_.get(prefix);
+    if (!p) {
+      p = (async () => {
+        const parent = prefix.slice(0, prefix.lastIndexOf('/', prefix.length - 2) + 1);
+        if (parent !== '' && !(await this.has(parent))) return false;
+        return (await this.list(parent)).has(prefix);
+      })();
+      this.exists_.set(prefix, p);
+    }
+    return p;
+  }
+}
+
+// ─── Create a folder marker in R2 ────────────────────────────────────────────
+async function createFolder(key: string): Promise<void> {
+  const prefix = key.endsWith('/') ? key : `${key}/`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET,
+    Key: prefix,
+    ContentType: 'application/x-directory',
+    Body: '',
+  }));
+}
+
+// ─── Build the expected folder list for one client ───────────────────────────
+// Expected structure for each active client:
+//   CompanyName/
+//   CompanyName/raw-footage/
+//   CompanyName/elements/
+//   CompanyName/outputs/
+//   For each distinct monthFolder found in tasks:
+//     CompanyName/raw-footage/<Month-Year>/
+//     CompanyName/outputs/<Month-Year>/
+//     For each monthly deliverable type the client has:
+//     CompanyName/raw-footage/<Month-Year>/<DeliverableFolderName>/
+interface ExpectedFolder {
+  key: string;           // full R2 key with trailing slash
+  label: string;         // human-readable description
+  clientId: string;
+  companyName: string;
+}
+
+async function buildExpectedFolders(): Promise<ExpectedFolder[]> {
+  const db = getDbHttp();
+  const clients = await db.query.client.findMany({
+    where: eq(clientTable.status, 'active'),
+    columns: { id: true, name: true, companyName: true },
+    with: {
+      monthlyDeliverables: { columns: { id: true, type: true, quantity: true } },
+    },
+    orderBy: (c, { asc }) => asc(c.name),
+  });
+
+  // Get all distinct monthFolders that have tasks (tells us which months existed)
+  const monthRows = await db.selectDistinct({ monthFolder: taskTable.monthFolder, clientId: taskTable.clientId })
+    .from(taskTable)
+    .where(isNotNull(taskTable.monthFolder))
+    .orderBy(desc(taskTable.monthFolder));
+
+  // Build a map: clientId → Set<monthFolder>
+  const clientMonths = new Map<string, Set<string>>();
+  for (const row of monthRows) {
+    if (!row.clientId || !row.monthFolder) continue;
+    if (!clientMonths.has(row.clientId)) clientMonths.set(row.clientId, new Set());
+    clientMonths.get(row.clientId)!.add(row.monthFolder);
+  }
+
+  // Actual per-(client, deliverable, month) task counts. Each SF/LF task
+  // created a numbered raw-footage folder 1:1 (see generateMonthly.ts /
+  // raw-footage-folders.ts), so for months that have already run, "how
+  // many tasks of this deliverable exist this month" IS the correct
+  // expected folder count — NOT the deliverable's current `quantity`,
+  // which can drift from what was actually generated in the past if the
+  // client's quantity was changed since (see note below).
+  const deliverableMonthCounts = await db.select({
+    clientId: taskTable.clientId,
+    monthlyDeliverableId: taskTable.monthlyDeliverableId,
+    monthFolder: taskTable.monthFolder,
+    taskCount: count(),
+  })
+    .from(taskTable)
+    .where(and(isNotNull(taskTable.monthlyDeliverableId), isNotNull(taskTable.monthFolder)))
+    .groupBy(taskTable.clientId, taskTable.monthlyDeliverableId, taskTable.monthFolder);
+
+  const actualCountByKey = new Map<string, number>();
+  for (const row of deliverableMonthCounts) {
+    if (!row.clientId || !row.monthlyDeliverableId || !row.monthFolder) continue;
+    actualCountByKey.set(`${row.clientId}|${row.monthlyDeliverableId}|${row.monthFolder}`, row.taskCount);
+  }
+
+  // Always include the current + next month for every active client
+  const now = new Date();
+  const currentMonth = now.toLocaleDateString('en-US', { month: 'long' }) + '-' + now.getFullYear();
+  const nextDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const nextMonth = nextDate.toLocaleDateString('en-US', { month: 'long' }) + '-' + nextDate.getFullYear();
+
+  const expected: ExpectedFolder[] = [];
+
+  for (const client of clients) {
+    const company = (client.companyName || client.name).trim();
+
+    // Top-level folders
+    expected.push({ key: `${company}/`,             label: 'Root folder',        clientId: client.id, companyName: company });
+    expected.push({ key: `${company}/raw-footage/`, label: 'raw-footage root',   clientId: client.id, companyName: company });
+    expected.push({ key: `${company}/elements/`,    label: 'elements root',      clientId: client.id, companyName: company });
+    expected.push({ key: `${company}/outputs/`,     label: 'outputs root',       clientId: client.id, companyName: company });
+
+    // Per-month folders
+    const months = new Set([
+      ...(clientMonths.get(client.id) ?? []),
+      currentMonth,
+      nextMonth,
+    ]);
+
+    // Raw-footage subfolders only ever get created for SF/LF deliverables
+    // (assignRawFootageFolderForTask returns null — does nothing — for
+    // every other deliverable type). Thumbnails/Tiles/Stories/etc. never
+    // get a raw-footage/<month>/<type>/ folder anywhere in the app, so
+    // expecting one for them (as this used to do, unfiltered) flagged
+    // every such folder as permanently "missing" for every client that
+    // has any non-SF/LF deliverable.
+    const rawFootageDeliverables = client.monthlyDeliverables.filter(
+      d => ['SF', 'LF'].includes(getDeliverableShortCode(d.type))
+    );
+
+    for (const month of months) {
+      expected.push({
+        key: `${company}/raw-footage/${month}/`,
+        label: `raw-footage/${month}`,
+        clientId: client.id,
+        companyName: company,
+      });
+      expected.push({
+        key: `${company}/outputs/${month}/`,
+        label: `outputs/${month}`,
+        clientId: client.id,
+        companyName: company,
+      });
+
+      // A month is "upcoming" (current or next) if tasks for it may not
+      // have been generated yet — for those we still expect the client's
+      // CURRENTLY configured quantity, same as before. A month that
+      // already has tasks in it is "historical": we expect exactly the
+      // number of SF/LF tasks that actually exist for it, so a quantity
+      // change made after that month ran doesn't retroactively make old
+      // folders look missing (or hide real gaps).
+      const isUpcoming = month === currentMonth || month === nextMonth;
+
+      for (const deliverable of rawFootageDeliverables) {
+        const shortCode = getDeliverableShortCode(deliverable.type);
+        const deliverableFolderName = getDeliverableFolderName(deliverable.type);
+
+        const expectedCount = isUpcoming
+          ? (deliverable.quantity || 0)
+          : (actualCountByKey.get(`${client.id}|${deliverable.id}|${month}`) || 0);
+
+        if (expectedCount === 0) continue; // nothing expected for this deliverable this month
+
+        // The deliverable's raw-footage container folder only matters if
+        // we expect at least one numbered subfolder in it this month.
+        expected.push({
+          key: `${company}/raw-footage/${month}/${deliverableFolderName}/`,
+          label: `raw-footage/${month}/${deliverableFolderName}`,
+          clientId: client.id,
+          companyName: company,
+        });
+
+        for (let n = 1; n <= expectedCount; n++) {
+          expected.push({
+            key: `${company}/raw-footage/${month}/${deliverableFolderName}/${shortCode}${n}/`,
+            label: `raw-footage/${month}/${deliverableFolderName}/${shortCode}${n}`,
+            clientId: client.id,
+            companyName: company,
+          });
+        }
+      }
+    }
+  }
+
+  return expected;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/admin/repair-folders
+// Scans all expected folders and returns which are missing — does NOT create anything
+// ─────────────────────────────────────────────────────────────────────────────
+export async function GET(req: NextRequest) {
+  const db = getDbHttp();
+  try {
+    await requireAdmin(req);
+
+    const expected = await buildExpectedFolders();
+
+    const index = new FolderIndex();
+    const CONCURRENCY = 20;
+    const missing: ExpectedFolder[] = [];
+    const present: ExpectedFolder[] = [];
+
+    for (let i = 0; i < expected.length; i += CONCURRENCY) {
+      const batch = expected.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(batch.map(f => index.has(f.key)));
+      batch.forEach((f, idx) => {
+        if (results[idx]) present.push(f);
+        else missing.push(f);
+      });
+    }
+
+    // Group missing by client for the UI
+    const byClient: Record<string, { companyName: string; missing: { key: string; label: string }[] }> = {};
+    for (const f of missing) {
+      if (!byClient[f.clientId]) byClient[f.clientId] = { companyName: f.companyName, missing: [] };
+      byClient[f.clientId].missing.push({ key: f.key, label: f.label });
+    }
+
+    return NextResponse.json({
+      scanned: expected.length,
+      presentCount: present.length,
+      missingCount: missing.length,
+      byClient,
+    });
+  } catch (err: any) {
+    console.error('repair-folders GET error:', err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/repair-folders
+// Body: { keys: string[] }  — creates only the folders you explicitly pass
+// Returns per-key success/failure so the UI can update individually
+// ─────────────────────────────────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
+  const db = getDbHttp();
+  try {
+    await requireAdmin(req);
+
+    const { keys }: { keys: string[] } = await req.json();
+
+    if (!Array.isArray(keys) || keys.length === 0) {
+      return NextResponse.json({ error: 'keys must be a non-empty array' }, { status: 400 });
+    }
+
+    // Safety: only allow keys that look like valid R2 folder paths (no traversal)
+    const safe = keys.filter(k => typeof k === 'string' && !k.includes('..') && k.endsWith('/'));
+    if (safe.length !== keys.length) {
+      return NextResponse.json({ error: 'One or more keys are invalid' }, { status: 400 });
+    }
+
+    const results: { key: string; ok: boolean; error?: string }[] = [];
+
+    // Create folders with concurrency cap
+    const CONCURRENCY = 10;
+    for (let i = 0; i < safe.length; i += CONCURRENCY) {
+      const batch = safe.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(batch.map(key => createFolder(key)));
+      settled.forEach((result, idx) => {
+        if (result.status === 'fulfilled') {
+          results.push({ key: batch[idx], ok: true });
+        } else {
+          results.push({ key: batch[idx], ok: false, error: (result.reason as Error).message });
+        }
+      });
+    }
+
+    const created = results.filter(r => r.ok).length;
+    const failed  = results.filter(r => !r.ok).length;
+
+    return NextResponse.json({ created, failed, results });
+  } catch (err: any) {
+    console.error('repair-folders POST error:', err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}

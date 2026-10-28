@@ -1,0 +1,1547 @@
+"use client";
+
+import React, { useState, useEffect, useRef } from 'react';
+import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Input } from '../ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import { FilterSelect } from '../ui/filter-select';
+import { Checkbox } from '../ui/checkbox';
+import { Textarea } from '../ui/textarea';
+import { Label } from '../ui/label';
+import { LinkedSfTasks } from '../tasks/LinkedSfTasks';
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "../ui/select";
+import {
+    DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
+import {
+    Search, Download, Play, Eye, Check, X, Plus, ChevronDown, ChevronRight,
+    ChevronUp, ExternalLink, Sparkles, FileText, Video, Image as ImageIcon,
+    Copy, RefreshCw, Filter, ArrowUpDown, Instagram, Youtube, Facebook,
+    Linkedin, Twitter, Music, Clock, Pencil, Trash2, Package, Calendar,
+    Loader2, Users, ArrowLeft, AlertTriangle, ScrollText,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { FilePreviewModal } from '../FileViewerModal';
+import { useDebounce } from '@/hooks/useDebounce';
+import { TagPicker } from '../workflow/TagPicker';
+import { formatInEST, utcToESTWallClock, estWallClockToUTC } from '@/lib/timezone';
+import { sortTaskImages } from '@/lib/task-image-order';
+import { DeliverableGapTracker } from './DeliverableGapTracker';
+
+const TikTokIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+        <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
+    </svg>
+);
+
+const SnapchatIcon = ({ className }: { className?: string }) => (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+        <path d="M12.206 1c.266 0 2.869.108 4.156 2.476.68 1.252.515 3.391.39 4.626l-.006.063a.696.696 0 0 0 .282.076c.3-.016.622-.156.933-.312l.085-.043c.259-.126.52-.218.777-.218a.96.96 0 0 1 .388.077c.488.2.564.585.564.775 0 .357-.242.678-.727.964-.134.079-.282.15-.44.224l-.075.035c-.432.197-1.024.467-1.14.862-.063.213-.012.484.149.806l.012.024c.031.065 3.07 6.46-3.148 7.636a.632.632 0 0 0-.094.035c-.053.032-.072.072-.04.15.107.262.345.492.603.736l.059.056c.258.242.536.503.72.82.349.603.162 1.195-.516 1.612-.637.393-1.462.558-2.136.639a4.18 4.18 0 0 0-.403.063c-.135.032-.274.094-.423.16l-.041.018c-.347.155-.828.37-1.537.37-.03 0-.063 0-.094-.002a3.382 3.382 0 0 1-.124.002c-.709 0-1.19-.215-1.537-.37l-.041-.018a2.516 2.516 0 0 0-.423-.16 4.185 4.185 0 0 0-.403-.063c-.674-.081-1.499-.246-2.136-.639-.678-.417-.865-1.009-.516-1.612.184-.317.462-.578.72-.82l.059-.056c.258-.244.496-.474.603-.736.032-.078.013-.118-.04-.15a.632.632 0 0 0-.094-.035C2.93 18.53 5.968 12.135 6 12.07l.012-.024c.161-.322.212-.593.149-.806-.116-.395-.708-.665-1.14-.862l-.075-.035a4.453 4.453 0 0 1-.44-.224C4.02 9.825 3.778 9.504 3.778 9.147c0-.19.076-.575.564-.775a.96.96 0 0 1 .388-.077c.257 0 .518.092.777.218l.085.043c.311.156.634.296.933.312a.696.696 0 0 0 .282-.076l-.006-.063c-.125-1.235-.29-3.374.39-4.626C8.478 1.108 11.08 1 11.794 1h.412z"/>
+    </svg>
+);
+
+const PLATFORMS = {
+    instagram: { label: 'IG', icon: Instagram, color: 'text-pink-600', bgColor: 'bg-pink-50' },
+    youtube: { label: 'YT', icon: Youtube, color: 'text-red-600', bgColor: 'bg-red-50' },
+    tiktok: { label: 'TT', icon: TikTokIcon, color: 'text-black', bgColor: 'bg-gray-100' },
+    facebook: { label: 'FB', icon: Facebook, color: 'text-blue-600', bgColor: 'bg-blue-50' },
+    linkedin: { label: 'LI', icon: Linkedin, color: 'text-blue-700', bgColor: 'bg-blue-50' },
+    twitter: { label: 'X', icon: Twitter, color: 'text-gray-900', bgColor: 'bg-gray-100' },
+    snapchat: { label: 'SC', icon: SnapchatIcon, color: 'text-yellow-500', bgColor: 'bg-yellow-50' },
+};
+
+type PlatformKey = keyof typeof PLATFORMS;
+
+const formatPostingTime = (timeStr: string): string => {
+    const matchAmPm = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (matchAmPm) return `${matchAmPm[1]}:${matchAmPm[2]} ${matchAmPm[3].toUpperCase()}`;
+    const match24 = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+    if (match24) {
+        let h = parseInt(match24[1], 10);
+        const period = h >= 12 ? "PM" : "AM";
+        if (h === 0) h = 12;
+        else if (h > 12) h -= 12;
+        return `${h}:${match24[2]} ${period}`;
+    }
+    return timeStr;
+};
+
+const formatPostingTimes = (times: string[]): string => {
+    if (!times || times.length === 0) return "";
+    return times.map(formatPostingTime).join(", ");
+};
+
+interface SchedulerTask {
+    id: string;
+    title: string;
+    titleSetByQC?: boolean;
+    titleSetByClient?: boolean;
+    postingTitle?: string | null;
+    description?: string;
+    priority: string;
+    status: string;
+    dueDate?: string;
+    files: {
+        id: string | number;
+        name: string;
+        url?: string;
+        size: number;
+        mimeType?: string;
+        folderType?: string;
+        s3Key?: string;
+    }[];
+    createdAt: string;
+    clientId: string;
+    client?: { id?: string; name: string; companyName?: string; };
+    editor?: { id: number; name: string; };
+    deliverable?: {
+        id: string; type: string; quantity?: number; videosPerDay?: number;
+        postingSchedule?: string; postingDays?: string[]; postingTimes?: string[];
+        platforms?: string[]; description?: string; isOneOff?: boolean; isTrial?: boolean;
+    };
+    socialMediaLinks?: Array<{ platform: string; url: string; postedAt: string }>;
+    suggestedTitles?: Array<{ style?: string; title: string; reasoning?: string }> | string[];
+    titlingStatus?: string;
+    isSponsored?: boolean;
+    deliverableType?: string | null;
+    shootScriptRef?: string | null;
+    tags?: { id: string; name: string }[];
+}
+
+interface ClientDeliverable {
+    id: string; type: string; quantity: number; postingSchedule: string;
+    postingDays: string[]; postingTimes: string[]; platforms: string[];
+    description?: string; isOneOff?: boolean;
+}
+
+// ── File badge helpers ──────────────────────────────────────────────────────
+// Groups task files by folderType and returns counts for the summary badges
+// shown in the collapsed row. Editors upload to these exact folderType values:
+//   'main'          → primary video file
+//   'thumbnails'    → thumbnail images (plural — matches DB value)
+//   'music-license' → music license PDFs/docs (matches DB value)
+//   'tiles'         → tile/cover images
+//   'covers'        → cover art
+//   'other'         → uncategorized
+function getFileBadgeCounts(files: SchedulerTask['files']) {
+    const counts = {
+        videos: 0,       // main + any video/* MIME outside thumbnails folder
+        thumbnails: 0,   // folderType === 'thumbnails'
+        musicLicenses: 0, // folderType === 'music-license'
+        other: 0,        // everything else (tiles, covers, docs, etc.)
+    };
+    for (const f of files) {
+        const ft = f.folderType || 'other';
+        if (ft === 'thumbnails') {
+            counts.thumbnails++;
+        } else if (ft === 'music-license') {
+            counts.musicLicenses++;
+        } else if (ft === 'main' && f.mimeType?.startsWith('image/')) {
+            counts.thumbnails++; // hard post images in main folder
+        } else if (ft === 'main' || f.mimeType?.startsWith('video/')) {
+            counts.videos++;
+        } else {
+            counts.other++;
+        }
+    }
+    return counts;
+}
+
+export function SchedulerSpreadsheetView() {
+    const [tasks, setTasks] = useState<SchedulerTask[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const debouncedSearchTerm = useDebounce(searchTerm, 500);
+    const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+    const [sortColumn, setSortColumn] = useState<string>('dueDate');
+    const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+    const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'scheduled'>('all');
+    const [clientFilter, setClientFilter] = useState<string>('all');
+    const [deliverableFilter, setDeliverableFilter] = useState<string>('all');
+    const [tagFilter, setTagFilter] = useState<string>('all');
+    const [availableTags, setAvailableTags] = useState<string[]>([]);
+    const [dateRange, setDateRange] = useState<string>('30d');
+    const [allClients, setAllClients] = useState<{ id: string; name: string; companyName?: string }[]>([]);
+    const [allDeliverables, setAllDeliverables] = useState<string[]>([]);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [totalTasks, setTotalTasks] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
+    const [pageSize] = useState(50);
+    const [isInitialLoad, setIsInitialLoad] = useState(true);
+    const [clientDeliverables, setClientDeliverables] = useState<ClientDeliverable[]>([]);
+    const [loadingDeliverables, setLoadingDeliverables] = useState(false);
+    const [deliverablesExpanded, setDeliverablesExpanded] = useState(true);
+    const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
+    const [previewFile, setPreviewFile] = useState<any | null>(null);
+    const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+    const [playingVideo, setPlayingVideo] = useState<string | null>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [linkDialog, setLinkDialog] = useState<{
+        open: boolean; taskId: string; platform: PlatformKey;
+        mode: 'add' | 'edit'; existingUrl?: string; existingPostedAt?: string;
+    } | null>(null);
+    const [linkUrl, setLinkUrl] = useState('');
+    const [linkPostedAt, setLinkPostedAt] = useState('');
+    const [submittingLink, setSubmittingLink] = useState(false);
+    const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+    const [showSendBackDialog, setShowSendBackDialog] = useState(false);
+    const [sendBackTaskId, setSendBackTaskId] = useState<string | null>(null);
+    const [sendBackTaskTitle, setSendBackTaskTitle] = useState('');
+    const [sendBackFeedback, setSendBackFeedback] = useState('');
+    const [isSendingBack, setIsSendingBack] = useState(false);
+    const [scriptDialog, setScriptDialog] = useState<{
+        open: boolean;
+        title: string;
+        content: string;
+        status: string;
+        clientFeedback?: string;
+    } | null>(null);
+    const [scriptLoadingId, setScriptLoadingId] = useState<string | null>(null);
+
+    const openTaskScript = async (taskId: string) => {
+        setScriptLoadingId(taskId);
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/script`);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Could not load script');
+            if (!data.script) {
+                toast.error('No script linked to this task');
+                return;
+            }
+            setScriptDialog({
+                open: true,
+                title: data.script.title || 'Shoot Script',
+                content: data.script.content || '',
+                status: data.script.status || 'draft',
+                clientFeedback: data.script.clientFeedback,
+            });
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Could not load script');
+        } finally {
+            setScriptLoadingId(null);
+        }
+    };
+
+    useEffect(() => { fetchMetadata(); }, []);
+    useEffect(() => {
+        fetch('/api/tags', { credentials: 'include' })
+            .then((res) => res.json())
+            .then((data) => { if (data.ok) setAvailableTags(data.tags.map((t: any) => t.name)); })
+            .catch(() => {});
+    }, []);
+    useEffect(() => { loadTasks(1, false); }, [debouncedSearchTerm, statusFilter, clientFilter, dateRange, deliverableFilter, tagFilter]);
+
+    async function fetchMetadata() {
+        try {
+            const res = await fetch("/api/schedular/metadata", { cache: "no-store" });
+            const data = await res.json();
+            if (data.clients) setAllClients(data.clients);
+            if (data.deliverableTypes) setAllDeliverables(data.deliverableTypes);
+        } catch (error) { console.error("Error loading metadata:", error); }
+    }
+
+    async function loadTasks(pageNum: number = 1, isLoadMore: boolean = false) {
+        try {
+            setLoading(true);
+            const queryParams = new URLSearchParams({
+                page: pageNum.toString(), limit: pageSize.toString(),
+                search: debouncedSearchTerm, status: statusFilter,
+                clientId: clientFilter, deliverableType: deliverableFilter, dateRange,
+                tag: tagFilter,
+            });
+            const res = await fetch(`/api/schedular/tasks?${queryParams.toString()}`, { cache: "no-store" });
+            const data = await res.json();
+
+            console.log(data.tasks);
+            if (!data.tasks) {
+                if (!isLoadMore) setTasks([]);
+                setTotalTasks(0); setHasMore(false); return;
+            }
+            const mapped = data.tasks.map((t: any) => {
+                const rawDeliverable = t.monthlyDeliverable || t.oneOffDeliverable;
+                return {
+                    id: t.id,
+                    title: t.title,
+                    titleSetByQC: t.titleSetByQC ?? false,
+                    titleSetByClient: t.titleSetByClient ?? false,
+                    postingTitle: t.postingTitle ?? null,
+                    postingTitles: t.postingTitles ?? [],
+                    postingDescriptions: t.postingDescriptions ?? [],
+                    postingTags: t.postingTags ?? [],
+                    description: t.description,
+                    priority: t.priority || "medium",
+                    status: ['SCHEDULED', 'POSTED', 'PUBLISHED'].includes((t.status || '').toUpperCase()) ? 'SCHEDULED' : 'PENDING',
+                    dueDate: t.dueDate,
+                    files: (t.files || []).map((file: any) => ({
+                        id: file.id, name: file.name, url: file.url || '',
+                        size: file.size || 0, mimeType: file.mimeType || '',
+                        // Preserve the exact folderType from DB — 'thumbnails' and 'music-license'
+                        folderType: file.folderType || 'other', s3Key: file.s3Key || '',
+                    })),
+                    createdAt: t.createdAt, clientId: t.clientId, client: t.client,
+                    deliverable: rawDeliverable ? {
+                        id: rawDeliverable.id, type: rawDeliverable.type,
+                        quantity: rawDeliverable.quantity, videosPerDay: rawDeliverable.videosPerDay,
+                        postingSchedule: rawDeliverable.postingSchedule,
+                        postingDays: rawDeliverable.postingDays || [],
+                        postingTimes: rawDeliverable.postingTimes || [],
+                        platforms: rawDeliverable.platforms || [],
+                        description: rawDeliverable.description,
+                        isTrial: rawDeliverable.isTrial ?? false,
+                        isOneOff: !!t.oneOffDeliverable && !t.monthlyDeliverable,
+                    } : undefined,
+                    socialMediaLinks: t.socialMediaLinks || [],
+                    suggestedTitles: t.suggestedTitles || [],
+                    titlingStatus: t.titlingStatus || 'NONE',
+                    isSponsored: t.isSponsored || false,
+                    deliverableType: t.deliverableType ?? null,
+                    shootScriptRef: t.shootScriptRef ?? null,
+                    tags: t.tags || [],
+                    editor: t.editor,
+                };
+            });
+            if (isLoadMore) setTasks(prev => [...prev, ...mapped]);
+            else setTasks(mapped);
+            setTotalTasks(data.total || 0);
+            setHasMore(data.page < data.totalPages);
+            setCurrentPage(data.page || 1);
+            setIsInitialLoad(false);
+        } catch (error) {
+            console.error("Error loading tasks:", error);
+            toast.error('Failed to load tasks');
+        } finally { setLoading(false); }
+    }
+
+    async function fetchClientDeliverables(clientId: string) {
+        if (clientId === 'all') { setClientDeliverables([]); return; }
+        try {
+            setLoadingDeliverables(true);
+            const [monthlyRes, oneOffRes] = await Promise.all([
+                fetch(`/api/clients/${clientId}/deliverables`, { cache: "no-store" }),
+                fetch(`/api/clients/${clientId}/one-off-deliverables`, { cache: "no-store" }),
+            ]);
+            const monthlyData = await monthlyRes.json();
+            const oneOffData = await oneOffRes.json();
+            const monthly: ClientDeliverable[] = (monthlyData.deliverables || []).map((d: any) => ({
+                id: d.id, type: d.type, quantity: d.quantity, postingSchedule: d.postingSchedule,
+                postingDays: d.postingDays || [], postingTimes: d.postingTimes || [],
+                platforms: d.platforms || [], description: d.description, isOneOff: false,
+            }));
+            const oneOff: ClientDeliverable[] = (oneOffData.deliverables || []).map((d: any) => ({
+                id: d.id, type: d.type, quantity: d.quantity, postingSchedule: d.postingSchedule,
+                postingDays: d.postingDays || [], postingTimes: d.postingTimes || [],
+                platforms: d.platforms || [], description: d.description, isOneOff: true,
+            }));
+            setClientDeliverables([...monthly, ...oneOff]);
+            setDeliverablesExpanded(true);
+        } catch (error) {
+            console.error("Error loading client deliverables:", error);
+            toast.error('Failed to load deliverables');
+            setClientDeliverables([]);
+        } finally { setLoadingDeliverables(false); }
+    }
+
+    function handleClientFilterChange(clientId: string) {
+        setClientFilter(clientId);
+        fetchClientDeliverables(clientId);
+    }
+
+    const hasPlatformLink = (task: SchedulerTask, platform: PlatformKey): string | null => {
+        const link = task.socialMediaLinks?.find(l => l.platform.toLowerCase() === platform);
+        return link?.url || null;
+    };
+
+    async function submitSocialLink() {
+        if (!linkDialog || !linkUrl) return;
+        try {
+            setSubmittingLink(true);
+            const isEdit = linkDialog.mode === 'edit';
+            const postedAtValue = linkPostedAt ? estWallClockToUTC(linkPostedAt) : new Date().toISOString();
+            const res = await fetch(`/api/tasks/${linkDialog.taskId}/social-media-link`, {
+                method: isEdit ? 'PATCH' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ platform: linkDialog.platform, url: linkUrl, postedAt: postedAtValue }),
+            });
+            if (!res.ok) throw new Error(`Failed to ${isEdit ? 'update' : 'add'} link`);
+            setTasks(prev => prev.map(t => {
+                if (t.id !== linkDialog.taskId) return t;
+                if (isEdit) {
+                    return { ...t, socialMediaLinks: (t.socialMediaLinks || []).map(link =>
+                        link.platform.toLowerCase() === linkDialog.platform.toLowerCase()
+                            ? { ...link, url: linkUrl, postedAt: postedAtValue } : link
+                    )};
+                }
+                return { ...t, socialMediaLinks: [...(t.socialMediaLinks || []), { platform: linkDialog.platform, url: linkUrl, postedAt: postedAtValue }] };
+            }));
+            toast.success(`${PLATFORMS[linkDialog.platform].label} link ${isEdit ? 'updated' : 'added'}!`);
+            setLinkDialog(null); setLinkUrl(''); setLinkPostedAt('');
+            if (!isEdit) {
+                const task = tasks.find(t => t.id === linkDialog.taskId);
+                if (task && task.status !== 'SCHEDULED') {
+                    const requiredPlatforms = task.deliverable?.platforms?.map(p => p.toLowerCase()) || [];
+                    if (requiredPlatforms.length > 0) {
+                        const existingLinks = (task.socialMediaLinks || []).map(l => l.platform.toLowerCase());
+                        const allLinks = [...new Set([...existingLinks, linkDialog.platform.toLowerCase()])];
+                        const allCovered = requiredPlatforms.every(p => allLinks.includes(p));
+                        if (allCovered) {
+                            setTimeout(() => markAsScheduled(task.id), 300);
+                        }
+                    }
+                }
+            }
+        } catch (err) { toast.error(`Failed to ${linkDialog.mode === 'edit' ? 'update' : 'add'} link`); }
+        finally { setSubmittingLink(false); }
+    }
+
+    async function deleteSocialLink(taskId: string, platform: string) {
+        if (!confirm(`Are you sure you want to remove this ${platform} link?`)) return;
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/social-media-link`, {
+                method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ platform }),
+            });
+            if (!res.ok) throw new Error('Failed to delete link');
+            setTasks(prev => prev.map(t => t.id === taskId
+                ? { ...t, socialMediaLinks: (t.socialMediaLinks || []).filter(l => l.platform.toLowerCase() !== platform.toLowerCase()) }
+                : t
+            ));
+            toast.success('Link removed');
+        } catch (err) { toast.error('Failed to remove link'); }
+    }
+
+    async function markAsScheduled(taskId: string) {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task?.socialMediaLinks?.length) { toast.error('Add at least one social media link first'); return; }
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/mark-scheduled`, {
+                method: "PATCH", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ postedAt: new Date().toISOString() }),
+            });
+            if (!res.ok) throw new Error("Failed to schedule");
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'SCHEDULED' } : t));
+            toast.success('Marked as scheduled!');
+        } catch (err) { toast.error('Failed to mark as scheduled'); }
+    }
+
+    async function markAsPending(taskId: string) {
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/mark-pending`, {
+                method: "PATCH", headers: { "Content-Type": "application/json" },
+            });
+            if (!res.ok) throw new Error("Failed to revert to pending");
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING' } : t));
+            toast.success('Reverted to pending!');
+        } catch (err) { toast.error('Failed to revert status'); }
+    }
+
+    async function toggleSponsored(taskId: string, current: boolean) {
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, isSponsored: !current } : t));
+        try {
+            const res = await fetch(`/api/tasks/${taskId}/sponsored`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ isSponsored: !current }),
+            });
+            if (!res.ok) {
+                setTasks(prev => prev.map(t => t.id === taskId ? { ...t, isSponsored: current } : t));
+                toast.error('Failed to update sponsored status');
+            }
+        } catch {
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, isSponsored: current } : t));
+            toast.error('Network error');
+        }
+    }
+
+    async function sendBackToEditor() {
+        if (!sendBackTaskId || !sendBackFeedback.trim()) return;
+        setIsSendingBack(true);
+        try {
+            const res = await fetch(`/api/tasks/${sendBackTaskId}/status`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                body: JSON.stringify({ status: 'REJECTED_BY_QC', schedulerFeedback: sendBackFeedback.trim(), route: 'editor' }),
+            });
+            if (!res.ok) { const data = await res.json(); throw new Error(data.message || 'Failed to send back'); }
+            toast.success('Task sent back to editor with feedback');
+            setShowSendBackDialog(false); setSendBackFeedback(''); setSendBackTaskId(null);
+            setTasks(prev => prev.filter(t => t.id !== sendBackTaskId));
+        } catch (err: any) { toast.error(err.message || 'Failed to send task back'); }
+        finally { setIsSendingBack(false); }
+    }
+
+    async function bulkMarkAsScheduled() {
+        const selectedTasks = tasks.filter(t => selectedRows.has(t.id));
+        const tasksWithLinks = selectedTasks.filter(t => t.socialMediaLinks && t.socialMediaLinks.length > 0);
+        if (tasksWithLinks.length === 0) { toast.error('Selected tasks need at least one social media link'); return; }
+        for (const task of tasksWithLinks) await markAsScheduled(task.id);
+        setSelectedRows(new Set());
+    }
+
+    async function downloadFile(file: any) {
+        try {
+            if (file.id) window.open(`/api/files/${file.id}/download`, '_blank');
+            else if (file.url) window.open(file.url, '_blank');
+            toast.success('Download started', { id: 'download' });
+        } catch (error) { toast.error('Download failed', { id: 'download' }); }
+    }
+
+    async function fetchSignedUrls(taskId: string) {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task || task.files.length === 0) return;
+        const fileIds = task.files.filter(f => f.id && !signedUrls[String(f.id)]).map(f => String(f.id));
+        if (fileIds.length === 0) return;
+        try {
+            const res = await fetch('/api/files/batch-presign', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIds }),
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.urls) setSignedUrls(prev => ({ ...prev, ...data.urls }));
+        } catch (error) { console.error('Failed to fetch signed URLs:', error); }
+    }
+
+    const getFileUrl = (file: { id: string | number; url?: string }) =>
+        signedUrls[String(file.id)] || file.url || '';
+
+    const toggleRow = (taskId: string) => {
+        setExpandedRows(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(taskId)) newSet.delete(taskId);
+            else { newSet.add(taskId); fetchSignedUrls(taskId); }
+            return newSet;
+        });
+    };
+
+    const handleSort = (column: string) => {
+        if (sortColumn === column) setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+        else { setSortColumn(column); setSortDirection('asc'); }
+    };
+
+    const displayTasks = tasks.sort((a, b) => {
+        let aVal: any, bVal: any;
+        switch (sortColumn) {
+            case 'title': aVal = a.title; bVal = b.title; break;
+            case 'client': aVal = a.client?.name || a.clientId; bVal = b.client?.name || b.clientId; break;
+            case 'dueDate': aVal = new Date(a.dueDate || 0); bVal = new Date(b.dueDate || 0); break;
+            case 'status': aVal = a.status; bVal = b.status; break;
+            default: aVal = a.dueDate; bVal = b.dueDate;
+        }
+        return sortDirection === 'asc' ? (aVal > bVal ? 1 : -1) : (aVal < bVal ? 1 : -1);
+    });
+
+    const uniqueClients = allClients.map(c => [c.id, c.companyName || c.name] as [string, string]);
+    const uniqueDeliverables = allDeliverables;
+
+    const copyTitle = (titleItem: any) => {
+        const titleText = typeof titleItem === 'string' ? titleItem : titleItem?.title || '';
+        navigator.clipboard.writeText(titleText);
+        toast.success('Copied to clipboard!');
+    };
+
+    const getTitleText = (titleItem: any): string =>
+        typeof titleItem === 'string' ? titleItem : titleItem?.title || '';
+
+    if (loading && isInitialLoad) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <div className="text-center">
+                    <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
+                    <p className="text-muted-foreground">Loading tasks...</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-4">
+            {/* Daily deliverable gap — banner + per-client breakdown */}
+            <DeliverableGapTracker />
+
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div><h1 className="text-[32px] font-bold leading-tight tracking-tight text-slate-950">Scheduling Queue</h1></div>
+                <div className="flex items-center gap-2">
+                    {selectedRows.size > 0 && (
+                        <Button onClick={bulkMarkAsScheduled} size="sm">
+                            <Check className="h-4 w-4 mr-2" />
+                            Mark Selected ({selectedRows.size})
+                        </Button>
+                    )}
+                    <Button variant="outline" size="sm" onClick={() => loadTasks()}>
+                        <RefreshCw className="h-4 w-4 mr-2" />Refresh
+                    </Button>
+                </div>
+            </div>
+
+            {/* Filters Bar */}
+            <div className="flex flex-wrap items-center gap-4 bg-white border rounded-lg p-3 shadow-sm">
+                <div className="flex-1 min-w-[200px] relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input placeholder="Search by title, client or ID..." value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)} className="pl-9 h-9 text-xs" />
+                </div>
+                <div className="flex items-center gap-2 border-l pl-4">
+                    <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5" />Window:
+                    </span>
+                    <Select value={dateRange} onValueChange={setDateRange}>
+                        <SelectTrigger className="h-9 w-[120px] text-xs"><SelectValue placeholder="Range" /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="7d">Last 7 Days</SelectItem>
+                            <SelectItem value="30d">Last 30 Days</SelectItem>
+                            <SelectItem value="90d">Last 90 Days</SelectItem>
+                            <SelectItem value="all">All Time</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
+                <div className="flex items-center gap-1 border-l pl-4">
+                    {(['all', 'pending', 'scheduled'] as const).map(s => (
+                        <Button key={s} variant={statusFilter === s ? "default" : "ghost"} size="sm"
+                            onClick={() => setStatusFilter(s)}
+                            className={`h-9 px-3 text-xs ${statusFilter === s
+                                ? s === 'all' ? 'bg-slate-900 text-white'
+                                    : s === 'pending' ? 'bg-indigo-600 text-white'
+                                    : 'bg-emerald-600 text-white'
+                                : ''}`}>
+                            {s.charAt(0).toUpperCase() + s.slice(1)}
+                        </Button>
+                    ))}
+                </div>
+                <div className="flex items-center gap-2 border-l pl-4">
+                    <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        <Users className="h-3.5 w-3.5" />Client:
+                    </span>
+                    <FilterSelect
+                        value={clientFilter}
+                        onValueChange={handleClientFilterChange}
+                        placeholder="All Clients"
+                        className="h-9 w-[150px] text-xs"
+                        contentClassName="max-h-[300px]"
+                        options={[
+                            { value: "all", label: "All Clients" },
+                            ...uniqueClients.map(([id, name]) => ({ value: id, label: name })),
+                        ]}
+                    />
+                </div>
+                <div className="flex items-center gap-2 border-l pl-4">
+                    <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        <Package className="h-3.5 w-3.5" />Type:
+                    </span>
+                    <FilterSelect
+                        value={deliverableFilter}
+                        onValueChange={setDeliverableFilter}
+                        placeholder="All Types"
+                        className="h-9 w-[130px] text-xs"
+                        options={[
+                            { value: "all", label: "All Types" },
+                            ...uniqueDeliverables.map((type) => ({ value: type, label: type })),
+                        ]}
+                    />
+                </div>
+                <div className="flex items-center gap-2 border-l pl-4">
+                    <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                        Tag:
+                    </span>
+                    <FilterSelect
+                        value={tagFilter}
+                        onValueChange={setTagFilter}
+                        placeholder="All Tags"
+                        className="h-9 w-[130px] text-xs"
+                        options={[
+                            { value: "all", label: "All Tags" },
+                            ...availableTags.map((tag) => ({ value: tag, label: tag })),
+                        ]}
+                    />
+                </div>
+            </div>
+
+            {/* Client Deliverables */}
+            {clientFilter !== "all" && (
+                <div className="bg-white border rounded-lg overflow-hidden">
+                    <button onClick={() => setDeliverablesExpanded(!deliverablesExpanded)}
+                        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
+                        <div className="flex items-center gap-2">
+                            <Package className="h-4 w-4 text-primary" />
+                            <span className="font-medium">
+                                Deliverables for {uniqueClients.find(([id]) => id === clientFilter)?.[1] || "Client"}
+                            </span>
+                            {clientDeliverables.length > 0 && <Badge variant="secondary" className="text-xs">{clientDeliverables.length}</Badge>}
+                        </div>
+                        {loadingDeliverables ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                            : deliverablesExpanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                            : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                    </button>
+                    {deliverablesExpanded && (
+                        <div className="border-t px-4 py-3">
+                            {loadingDeliverables ? (
+                                <div className="flex items-center justify-center py-6">
+                                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                                    <span className="text-sm text-muted-foreground">Loading deliverables...</span>
+                                </div>
+                            ) : clientDeliverables.length === 0 ? (
+                                <div className="text-center py-6 text-muted-foreground">
+                                    <Package className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                                    <p className="text-sm">No deliverables configured for this client</p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                                    {clientDeliverables.map((deliverable) => (
+                                        <div key={deliverable.id} className={`p-3 rounded-lg border ${deliverable.isOneOff ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-200"}`}>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-semibold text-sm">{deliverable.type}</span>
+                                                    {deliverable.isOneOff && <Badge variant="outline" className="text-[10px] h-4 px-1 bg-amber-100 text-amber-700 border-amber-300">One-Off</Badge>}
+                                                </div>
+                                                <Badge variant="secondary" className="text-xs font-bold">×{deliverable.quantity}</Badge>
+                                            </div>
+                                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
+                                                <Calendar className="h-3 w-3" />
+                                                <span className="capitalize">{deliverable.postingSchedule}</span>
+                                                {deliverable.postingDays.length > 0 && (
+                                                    <span className="text-gray-400">• {deliverable.postingDays.slice(0, 3).join(", ")}{deliverable.postingDays.length > 3 && "..."}</span>
+                                                )}
+                                            </div>
+                                            {deliverable.postingTimes.length > 0 && (
+                                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-2">
+                                                    <Clock className="h-3 w-3" />
+                                                    <span>{deliverable.postingTimes.slice(0, 2).map(formatPostingTime).join(", ")}{deliverable.postingTimes.length > 2 && ` +${deliverable.postingTimes.length - 2}`}</span>
+                                                </div>
+                                            )}
+                                            {deliverable.platforms.length > 0 && (
+                                                <div className="flex items-center gap-1 flex-wrap">
+                                                    {deliverable.platforms.map(platform => {
+                                                        const pk = platform.toLowerCase() as PlatformKey;
+                                                        const pi = PLATFORMS[pk];
+                                                        if (!pi) return <Badge key={platform} variant="outline" className="text-[10px] h-5 px-1.5">{platform}</Badge>;
+                                                        const Icon = pi.icon;
+                                                        return <div key={platform} className={`inline-flex items-center justify-center w-6 h-6 rounded ${pi.bgColor}`} title={platform}><Icon className={`h-3.5 w-3.5 ${pi.color}`} /></div>;
+                                                    })}
+                                                </div>
+                                            )}
+                                            {deliverable.description && <p className="text-xs text-muted-foreground mt-2 line-clamp-2">{deliverable.description}</p>}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Spreadsheet Table */}
+            <div className="bg-white border rounded-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                        <thead className="bg-gray-50 border-b sticky top-0 z-10">
+                            <tr>
+                                <th className="w-10 px-3 py-3 text-left">
+                                    <Checkbox
+                                        checked={selectedRows.size === tasks.length && tasks.length > 0}
+                                        onCheckedChange={(checked) => {
+                                            if (checked) setSelectedRows(new Set(tasks.map(t => t.id)));
+                                            else setSelectedRows(new Set());
+                                        }}
+                                    />
+                                </th>
+                                <th className="w-8 px-2"></th>
+                                <th className="px-3 py-3 text-left font-semibold cursor-pointer hover:bg-gray-100" onClick={() => handleSort('title')}>
+                                    <div className="flex items-center gap-1">Task Title <ArrowUpDown className="h-3 w-3 text-muted-foreground" /></div>
+                                </th>
+                                <th className="px-3 py-3 text-left font-semibold cursor-pointer hover:bg-gray-100" onClick={() => handleSort('client')}>
+                                    <div className="flex items-center gap-1">Client <ArrowUpDown className="h-3 w-3 text-muted-foreground" /></div>
+                                </th>
+                                <th className="px-3 py-3 text-left font-semibold">Editor</th>
+                                <th className="px-3 py-3 text-left font-semibold cursor-pointer hover:bg-gray-100" onClick={() => handleSort('dueDate')}>
+                                    <div className="flex items-center gap-1">Due <ArrowUpDown className="h-3 w-3 text-muted-foreground" /></div>
+                                </th>
+                                <th className="px-3 py-3 text-center font-semibold">
+                                    <div className="flex items-center justify-center gap-1"><Sparkles className="h-4 w-4 text-yellow-500" />AI Title</div>
+                                </th>
+                                {Object.entries(PLATFORMS).map(([key, platform]) => (
+                                    <th key={key} className="px-2 py-3 text-center font-semibold w-12">
+                                        <div className="flex justify-center" title={platform.label}>
+                                            <platform.icon className={`h-4 w-4 ${platform.color}`} />
+                                        </div>
+                                    </th>
+                                ))}
+                                <th className="px-3 py-3 text-center font-semibold cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>Status</th>
+                            </tr>
+                        </thead>
+
+                        <tbody className={`divide-y ${loading && !isInitialLoad ? 'opacity-50 pointer-events-none' : ''}`}>
+                            {tasks.length === 0 ? (
+                                <tr>
+                                    <td colSpan={15} className="px-6 py-12 text-center text-muted-foreground">
+                                        {loading ? (
+                                            <div className="flex flex-col items-center justify-center">
+                                                <RefreshCw className="h-8 w-8 animate-spin mb-4 text-primary" /><p>Finding tasks...</p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <FileText className="h-12 w-12 mx-auto mb-4 opacity-40" />
+                                                <p className="font-medium">No tasks found</p>
+                                                <p className="text-sm mt-1">Adjust your filters or wait for new tasks</p>
+                                            </>
+                                        )}
+                                    </td>
+                                </tr>
+                            ) : (
+                                displayTasks.map((task) => {
+                                    const isExpanded = expandedRows.has(task.id);
+                                    // ── Use folderType-aware counts instead of MIME-type-only grouping ──
+                                    const fileCounts = getFileBadgeCounts(task.files);
+
+                                    return (
+                                      <React.Fragment key={task.id}>
+                                        <tr
+                                          className={`hover:bg-gray-50 transition-colors ${task.status === "SCHEDULED" ? "bg-green-50" : ""} ${selectedRows.has(task.id) ? "bg-blue-50" : ""}`}
+                                        >
+                                          <td className="px-3 py-3">
+                                            <Checkbox
+                                              checked={selectedRows.has(task.id)}
+                                              onCheckedChange={(checked) => {
+                                                const newSet = new Set(selectedRows);
+                                                if (checked) newSet.add(task.id);
+                                                else newSet.delete(task.id);
+                                                setSelectedRows(newSet);
+                                              }}
+                                            />
+                                          </td>
+                                          <td className="px-2 py-3">
+                                            <button
+                                              onClick={() => toggleRow(task.id)}
+                                              className="p-1 hover:bg-gray-200 rounded"
+                                            >
+                                              {isExpanded ? (
+                                                <ChevronDown className="h-4 w-4" />
+                                              ) : (
+                                                <ChevronRight className="h-4 w-4" />
+                                              )}
+                                            </button>
+                                          </td>
+
+                                          {/* Title */}
+                                          <td className="px-3 py-3 max-w-[200px]">
+                                            <div className="flex items-center gap-1.5">
+                                              <p className="font-medium truncate" title={task.title}>
+                                                {task.title}
+                                              </p>
+                                              {(task.postingTitles?.length || task.titleSetByQC || task.titleSetByClient) && (
+                                                <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-violet-100 text-violet-700 border-violet-300" title="Posting content set">
+                                                  ✓
+                                                </span>
+                                              )}
+                                              {task.shootScriptRef && (
+                                                <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-violet-50 text-violet-700 border-violet-200" title="Shoot script linked">
+                                                  Script
+                                                </span>
+                                              )}
+                                              {task.isSponsored && (
+                                                <span className="flex-shrink-0 text-[10px] font-semibold px-1.5 py-0.5 bg-amber-100 text-amber-700 border border-amber-300 rounded">
+                                                  ★ Sponsored
+                                                </span>
+                                              )}
+                                            </div>
+                                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                                              <TagPicker
+                                                taskId={task.id}
+                                                tags={(task.tags || []).map(t => t.name)}
+                                                onChange={(next) => {
+                                                  setTasks(prev => prev.map(t => t.id === task.id
+                                                    ? { ...t, tags: next.map(name => ({ id: name, name })) }
+                                                    : t));
+                                                }}
+                                              />
+                                            </div>
+                                          </td>
+
+                                          <td className="px-3 py-3">
+                                            <span className="text-muted-foreground text-xs">
+                                              {task.client?.companyName || task.client?.name || task.clientId}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-3">
+                                            <span className="text-xs text-blue-600">
+                                              {task.editor?.name || "-"}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-3">
+                                            <span className="text-xs">
+                                              {task.dueDate
+                                                ? new Date(task.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                                                : "-"}
+                                            </span>
+                                          </td>
+
+                                          {/* ── Files column — folderType-aware badges ── */}
+                                          <td className="px-3 py-3 text-center">
+                                            <div className="flex items-center justify-center gap-1 flex-wrap">
+                                              {fileCounts.videos > 0 && (
+                                                <Badge variant="outline" className="text-xs px-1.5" title={`${fileCounts.videos} video file${fileCounts.videos > 1 ? 's' : ''}`}>
+                                                  <Video className="h-3 w-3 mr-1" />
+                                                  {fileCounts.videos}
+                                                </Badge>
+                                              )}
+                                              {fileCounts.thumbnails > 0 && (
+                                                <Badge variant="outline" className="text-xs px-1.5 border-indigo-200 text-indigo-700 bg-indigo-50" title={`${fileCounts.thumbnails} thumbnail${fileCounts.thumbnails > 1 ? 's' : ''}`}>
+                                                  <ImageIcon className="h-3 w-3 mr-1" />
+                                                  {fileCounts.thumbnails}
+                                                </Badge>
+                                              )}
+                                              {fileCounts.musicLicenses > 0 && (
+                                                <Badge variant="outline" className="text-xs px-1.5 border-pink-200 text-pink-700 bg-pink-50" title={`${fileCounts.musicLicenses} music license${fileCounts.musicLicenses > 1 ? 's' : ''}`}>
+                                                  <Music className="h-3 w-3 mr-1" />
+                                                  {fileCounts.musicLicenses}
+                                                </Badge>
+                                              )}
+                                              {fileCounts.other > 0 && (
+                                                <Badge variant="outline" className="text-xs px-1.5" title={`${fileCounts.other} other file${fileCounts.other > 1 ? 's' : ''}`}>
+                                                  <FileText className="h-3 w-3 mr-1" />
+                                                  {fileCounts.other}
+                                                </Badge>
+                                              )}
+                                              {task.files.length === 0 && (
+                                                <span className="text-muted-foreground text-xs">-</span>
+                                              )}
+                                            </div>
+                                          </td>
+
+                                          {/* ── AI Title / Posting Titles cell ── */}
+                                          <td className="px-3 py-3 max-w-[180px]">
+                                            {task.postingTitles && task.postingTitles.length > 0 ? (
+                                              <div className="space-y-0.5 min-w-0">
+                                                {task.postingTitles.map((t, i) => (
+                                                  <div key={t.id} className="flex items-center gap-1 min-w-0">
+                                                    <span className="flex-shrink-0 text-[10px] font-bold text-violet-500 w-4">{i + 1}.</span>
+                                                    <span className="text-xs text-violet-900 truncate" title={t.text}>{t.text}</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            ) : (task.titleSetByQC || task.titleSetByClient) ? (
+                                              <div className="flex items-center gap-1.5 min-w-0">
+                                                <span className={`flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${task.titleSetByClient ? 'bg-blue-100 text-blue-700 border-blue-300' : 'bg-violet-100 text-violet-700 border-violet-300'}`}>
+                                                  {task.titleSetByClient ? 'CLIENT' : 'QC'}
+                                                </span>
+                                                <span className={`text-xs font-medium truncate ${task.titleSetByClient ? 'text-blue-900' : 'text-violet-900'}`} title={task.title}>{task.title}</span>
+                                              </div>
+                                            ) : task.titlingStatus === "COMPLETED" && task.suggestedTitles?.length ? (
+                                              <button
+                                                onClick={() => copyTitle(task.suggestedTitles![0])}
+                                                className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-50 hover:bg-yellow-100 rounded text-xs font-medium text-yellow-800 border border-yellow-200"
+                                                title={getTitleText(task.suggestedTitles[0])}
+                                              >
+                                                <Copy className="h-3 w-3" />
+                                                Copy
+                                              </button>
+                                            ) : task.titlingStatus === "PROCESSING" ? (
+                                              <Badge variant="outline" className="text-xs">
+                                                <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                                                Processing
+                                              </Badge>
+                                            ) : (
+                                              <span className="text-muted-foreground text-xs">-</span>
+                                            )}
+                                          </td>
+
+                                          {/* Platform columns */}
+                                          {Object.entries(PLATFORMS).map(([key, platform]) => {
+                                            const existingUrl = hasPlatformLink(task, key as PlatformKey);
+                                            const Icon = platform.icon;
+                                            const deliverablePlatforms = task.deliverable?.platforms?.map((p: string) => p.toLowerCase()) || [];
+                                            const isPlatformInDeliverable = deliverablePlatforms.includes(key.toLowerCase());
+                                            return (
+                                              <td key={key} className="px-2 py-3 text-center">
+                                                {existingUrl ? (
+                                                  <button
+                                                    onClick={() => window.open(existingUrl, "_blank")}
+                                                    className={`inline-flex items-center justify-center w-7 h-7 rounded-full ${platform.bgColor} ${platform.color} border border-current opacity-80 hover:opacity-100 transition-opacity`}
+                                                    title={`View ${key} post`}
+                                                  >
+                                                    <Icon className="h-4 w-4" />
+                                                  </button>
+                                                ) : isPlatformInDeliverable ? (
+                                                  <button
+                                                    onClick={() => setLinkDialog({ open: true, taskId: task.id, platform: key as PlatformKey, mode: "add" })}
+                                                    className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-50 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors border-2 border-dashed border-gray-300 hover:border-dotted hover:border-gray-500 cursor-pointer"
+                                                    title={`Add ${key} link`}
+                                                  >
+                                                    <Plus className="h-3 w-3" />
+                                                  </button>
+                                                ) : (
+                                                  <span className="inline-flex items-center justify-center w-7 h-7 text-gray-200" title={`${key} not configured`}>
+                                                    <X className="h-3 w-3" />
+                                                  </span>
+                                                )}
+                                              </td>
+                                            );
+                                          })}
+
+                                          {/* Status */}
+                                          <td className="px-3 py-3 text-center">
+                                            <DropdownMenu modal={false}>
+                                              <DropdownMenuTrigger asChild>
+                                                {task.status === "SCHEDULED" ? (
+                                                  <Button variant="ghost" className="h-7 text-xs bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 gap-1 px-2">
+                                                    ✓ Scheduled{" "}
+                                                    {task.isSponsored && <span className="text-amber-600 font-semibold">★</span>}
+                                                    <ChevronDown className="h-3 w-3 opacity-50" />
+                                                  </Button>
+                                                ) : (
+                                                  <Button variant="outline" size="sm" className="h-7 text-xs gap-1 border">
+                                                    Pending{" "}
+                                                    {task.isSponsored && <span className="text-amber-600 font-semibold">★</span>}
+                                                    <ChevronDown className="h-3 w-3 opacity-50" />
+                                                  </Button>
+                                                )}
+                                              </DropdownMenuTrigger>
+                                              <DropdownMenuContent align="end" sideOffset={4} onCloseAutoFocus={(e) => e.preventDefault()}>
+                                                {task.status !== "SCHEDULED" ? (
+                                                  <DropdownMenuItem onClick={() => markAsScheduled(task.id)} className="text-green-600 font-medium">
+                                                    <Check className="h-4 w-4 mr-2" />Mark as Scheduled
+                                                  </DropdownMenuItem>
+                                                ) : (
+                                                  <DropdownMenuItem onClick={() => markAsPending(task.id)} className="text-amber-600 font-medium">
+                                                    <Clock className="h-4 w-4 mr-2" />Revert to Pending
+                                                  </DropdownMenuItem>
+                                                )}
+                                                <DropdownMenuItem
+                                                  onClick={() => toggleSponsored(task.id, task.isSponsored ?? false)}
+                                                  className={task.isSponsored ? "text-amber-700" : ""}
+                                                >
+                                                  <span className="mr-2">★</span>
+                                                  {task.isSponsored ? "Remove Sponsored" : "Mark as Sponsored"}
+                                                </DropdownMenuItem>
+                                                {task.status !== "SCHEDULED" && (
+                                                  <DropdownMenuItem
+                                                    onClick={(e) => {
+                                                      e.preventDefault();
+                                                      setSendBackTaskId(task.id);
+                                                      setSendBackTaskTitle(task.title || "");
+                                                      setSendBackFeedback("");
+                                                      setTimeout(() => setShowSendBackDialog(true), 50);
+                                                    }}
+                                                    className="text-red-600 font-medium"
+                                                  >
+                                                    <ArrowLeft className="h-4 w-4 mr-2" />Send Back to Editor
+                                                  </DropdownMenuItem>
+                                                )}
+                                              </DropdownMenuContent>
+                                            </DropdownMenu>
+                                          </td>
+                                        </tr>
+
+                                        {/* Expanded Row */}
+                                        {isExpanded && (
+                                          <tr className="bg-gray-50">
+                                            <td colSpan={14} className="px-6 py-4">
+                                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                                {/* Files Section */}
+                                                <div>
+                                                  <h4 className="font-semibold mb-3 flex items-center gap-2">
+                                                    <FileText className="h-4 w-4" />
+                                                    Task Files ({task.files.length})
+                                                  </h4>
+                                                  {task.files.length === 0 ? (
+                                                    <p className="text-muted-foreground text-sm">No files attached</p>
+                                                  ) : (
+                                                    <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
+                                                      {(() => {
+                                                        // Group by folderType using exact DB values
+                                                        const grouped = task.files.reduce((acc, file) => {
+                                                          const ft = file.folderType || "Uncategorized";
+                                                          if (!acc[ft]) acc[ft] = [];
+                                                          acc[ft].push(file);
+                                                          return acc;
+                                                        }, {} as Record<string, typeof task.files>);
+
+                                                        // Display order: main video first, then thumbnails and music near the top
+                                                        const order: Record<string, number> = {
+                                                          main: 0,
+                                                          thumbnails: 1,       // 'thumbnails' (plural) — exact DB value
+                                                          'music-license': 2,  // 'music-license' — exact DB value
+                                                          covers: 3,
+                                                          tiles: 4,
+                                                          other: 5,
+                                                          Uncategorized: 6,
+                                                        };
+
+                                                        // Human-readable labels for each folderType
+                                                        const folderLabels: Record<string, string> = {
+                                                          main: 'Main Video',
+                                                          thumbnails: 'Thumbnails',
+                                                          'music-license': 'Music Licenses',
+                                                          covers: 'Covers',
+                                                          tiles: 'Tiles',
+                                                          other: 'Other',
+                                                          Uncategorized: 'Uncategorized',
+                                                        };
+
+                                                        return Object.entries(grouped).sort(
+                                                          ([a], [b]) => (order[a] ?? 5) - (order[b] ?? 5)
+                                                        );
+                                                      })().map(([folderType, folderFiles]) => {
+                                                        const isHardPostImages = folderType === 'main' && folderFiles.every(f => f.mimeType?.startsWith('image/'));
+                                                        const folderLabels: Record<string, string> = {
+                                                          main: isHardPostImages ? 'Images' : 'Main Video',
+                                                          thumbnails: 'Thumbnails',
+                                                          'music-license': 'Music Licenses',
+                                                          covers: 'Covers',
+                                                          tiles: 'Tiles',
+                                                          other: 'Other',
+                                                          Uncategorized: 'Uncategorized',
+                                                        };
+                                                        const label = folderLabels[folderType] || folderType.replace(/-/g, ' ').replace(/_/g, ' ');
+
+                                                        return (
+                                                          <div key={folderType} className="space-y-2">
+                                                            <h5 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground bg-gray-100 px-2 py-1 rounded inline-flex items-center gap-1.5">
+                                                              {folderType === 'thumbnails' && <ImageIcon className="h-3 w-3" />}
+                                                              {folderType === 'music-license' && <Music className="h-3 w-3" />}
+                                                              {folderType === 'main' && folderFiles.every(f => f.mimeType?.startsWith('image/')) ? <ImageIcon className="h-3 w-3" /> : folderType === 'main' && <Video className="h-3 w-3" />}
+                                                              {label}
+                                                              <span className="font-normal opacity-60">({folderFiles.length})</span>
+                                                            </h5>
+                                                            <div className="space-y-2">
+                                                              {(isHardPostImages
+                                                                ? sortTaskImages(folderFiles, (task as any)?.attachments?.imageOrder)
+                                                                : folderFiles
+                                                              ).map((file) => {
+                                                                const isVideo = file.mimeType?.startsWith("video/");
+                                                                const isImage = file.mimeType?.startsWith("image/");
+                                                                return (
+                                                                  <div
+                                                                    key={file.id}
+                                                                    className="flex items-center justify-between p-2 bg-white rounded-lg border hover:border-primary/30 transition-colors"
+                                                                  >
+                                                                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                      {isVideo ? (
+                                                                        <Video className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                                                                      ) : isImage ? (
+                                                                        <img
+                                                                          src={getFileUrl(file)}
+                                                                          alt={file.name}
+                                                                          className="h-10 w-14 object-cover rounded flex-shrink-0 border border-zinc-200"
+                                                                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                                                                        />
+                                                                      ) : (
+                                                                        <FileText className="h-4 w-4 text-slate-400 flex-shrink-0" />
+                                                                      )}
+                                                                      <div className="min-w-0">
+                                                                        <p className="font-medium text-[13px] truncate">{file.name}</p>
+                                                                        <p className="text-[10px] text-muted-foreground">
+                                                                          {(file.size / 1024 / 1024).toFixed(2)} MB
+                                                                        </p>
+                                                                      </div>
+                                                                    </div>
+                                                                    <div className="flex items-center gap-1">
+                                                                      <Button
+                                                                        size="sm" variant="ghost" className="h-7 w-7 p-0"
+                                                                        onClick={() => {
+                                                                          setPreviewFile({ ...file, url: getFileUrl(file) });
+                                                                          setIsPreviewOpen(true);
+                                                                        }}
+                                                                      >
+                                                                        <Eye className="h-3 w-3" />
+                                                                      </Button>
+                                                                      <Button
+                                                                        size="sm" variant="ghost" className="h-7 w-7 p-0"
+                                                                        onClick={() => downloadFile(file)}
+                                                                      >
+                                                                        <Download className="h-3 w-3" />
+                                                                      </Button>
+                                                                    </div>
+                                                                  </div>
+                                                                );
+                                                              })}
+                                                            </div>
+                                                          </div>
+                                                        );
+                                                      })}
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                {/* ── Shoot script (view-only) ── */}
+                                                {task.shootScriptRef && (
+                                                  <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                      <div className="min-w-0">
+                                                        <h4 className="font-semibold flex items-center gap-2 text-sm text-violet-900">
+                                                          <ScrollText className="h-4 w-4 text-violet-500" />
+                                                          Shoot script
+                                                        </h4>
+                                                        <p className="mt-0.5 truncate text-xs text-violet-700">
+                                                          {(() => {
+                                                            try {
+                                                              const ref = JSON.parse(task.shootScriptRef);
+                                                              return ref.scriptTitle || 'Linked script';
+                                                            } catch {
+                                                              return 'Linked script';
+                                                            }
+                                                          })()}
+                                                        </p>
+                                                      </div>
+                                                      <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="h-8 shrink-0 border-violet-200 bg-white text-violet-700 hover:bg-violet-50"
+                                                        disabled={scriptLoadingId === task.id}
+                                                        onClick={() => void openTaskScript(task.id)}
+                                                      >
+                                                        {scriptLoadingId === task.id ? (
+                                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        ) : (
+                                                          <Eye className="h-3.5 w-3.5" />
+                                                        )}
+                                                        <span className="ml-1.5">View</span>
+                                                      </Button>
+                                                    </div>
+                                                  </div>
+                                                )}
+
+                                                {/* ── Posting Content: Titles, Descriptions, Tags ── */}
+                                                <div className="space-y-4">
+                                                  {/* Titles */}
+                                                  <div>
+                                                    <h4 className="font-semibold mb-2 flex items-center gap-2 text-sm text-gray-700">
+                                                      <Sparkles className="h-4 w-4 text-violet-500" />Titles
+                                                    </h4>
+                                                    {task.postingTitles && task.postingTitles.length > 0 ? (
+                                                      <div className="space-y-2">
+                                                        {task.postingTitles.map((t, i) => (
+                                                          <div key={t.id} className="flex items-center justify-between p-3 bg-violet-50 rounded-lg border border-violet-200">
+                                                            <div className="flex items-center gap-2 flex-1 min-w-0 mr-2">
+                                                              <span className="flex-shrink-0 text-[10px] font-bold w-5 text-violet-500">{i + 1}.</span>
+                                                              <p className="text-sm font-medium text-violet-900 truncate">{t.text}</p>
+                                                            </div>
+                                                            <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(t.text)} className="h-8 text-violet-600 shrink-0">
+                                                              <Copy className="h-3 w-3" />
+                                                            </Button>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    ) : (task.titleSetByQC || task.titleSetByClient) && task.postingTitle ? (
+                                                      <div className={`p-3 rounded-lg border flex items-center justify-between gap-3 ${task.titleSetByClient ? 'bg-blue-50 border-blue-200' : 'bg-violet-50 border-violet-200'}`}>
+                                                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                          <span className={`text-[10px] font-bold px-1.5 py-0.5 text-white rounded shrink-0 ${task.titleSetByClient ? 'bg-blue-600' : 'bg-violet-600'}`}>
+                                                            {task.titleSetByClient ? 'CLIENT' : 'QC'}
+                                                          </span>
+                                                          <p className={`text-sm font-medium truncate ${task.titleSetByClient ? 'text-blue-900' : 'text-violet-900'}`}>{task.postingTitle}</p>
+                                                        </div>
+                                                        <span className="text-[10px] shrink-0 text-gray-400">legacy</span>
+                                                      </div>
+                                                    ) : task.suggestedTitles && task.suggestedTitles.length > 0 ? (
+                                                      <div className="space-y-2">
+                                                        {task.suggestedTitles.slice(0, 5).map((title, i) => (
+                                                          <div key={i} className="flex items-center justify-between p-3 bg-white rounded-lg border hover:bg-gray-50">
+                                                            <p className="text-sm flex-1 mr-2">{getTitleText(title)}</p>
+                                                            <Button size="sm" variant="ghost" onClick={() => copyTitle(title)} className="h-8"><Copy className="h-3 w-3" /></Button>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    ) : (
+                                                      <p className="text-muted-foreground text-sm p-3 bg-white rounded-lg border text-center">No titles set</p>
+                                                    )}
+                                                  </div>
+
+                                                  {/* Descriptions */}
+                                                  {task.postingDescriptions && task.postingDescriptions.length > 0 && (
+                                                    <div>
+                                                      <h4 className="font-semibold mb-2 text-sm text-gray-700">Descriptions</h4>
+                                                      <div className="space-y-2">
+                                                        {task.postingDescriptions.map((d, i) => (
+                                                          <div key={d.id} className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border">
+                                                            <div className="flex gap-2 flex-1 min-w-0 mr-2">
+                                                              <span className="flex-shrink-0 text-[10px] font-bold text-gray-400 w-5 pt-0.5">{i + 1}.</span>
+                                                              <p className="text-sm text-gray-800 break-words">{d.text}</p>
+                                                            </div>
+                                                            <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(d.text)} className="h-8 shrink-0">
+                                                              <Copy className="h-3 w-3" />
+                                                            </Button>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                  )}
+
+                                                  {/* Tags */}
+                                                  {task.postingTags && task.postingTags.length > 0 && (
+                                                    <div>
+                                                      <h4 className="font-semibold mb-2 text-sm text-gray-700">Tags</h4>
+                                                      <div className="flex flex-wrap gap-1.5">
+                                                        {task.postingTags.map(t => (
+                                                          <button key={t.id} onClick={() => navigator.clipboard.writeText(`#${t.text.replace(/^#+/, '').trim()}`)}
+                                                            className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-full border text-gray-700 transition-colors">
+                                                            #{t.text.replace(/^#+/, '').trim()}
+                                                            <Copy className="h-2.5 w-2.5 opacity-50" />
+                                                          </button>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                  )}
+
+                                                  {/* Social Links Summary */}
+                                                  {task.socialMediaLinks && task.socialMediaLinks.length > 0 && (
+                                                    <div className="mt-4">
+                                                      <h4 className="font-semibold mb-2 text-sm">Posted Links</h4>
+                                                      <div className="space-y-2">
+                                                        {task.socialMediaLinks.map((link, i) => {
+                                                          const pk = link.platform.toLowerCase() as PlatformKey;
+                                                          const platform = PLATFORMS[pk];
+                                                          const Icon = platform?.icon || ExternalLink;
+                                                          return (
+                                                            <div key={i} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg group">
+                                                              <div className={`p-1 rounded ${platform?.bgColor || "bg-gray-100"}`}>
+                                                                <Icon className={`h-3.5 w-3.5 ${platform?.color || "text-gray-600"}`} />
+                                                              </div>
+                                                              <div className="flex-1 min-w-0">
+                                                                <a href={link.url} target="_blank" rel="noopener noreferrer"
+                                                                  className="text-sm text-blue-600 hover:underline truncate block">
+                                                                  {link.url.length > 50 ? link.url.slice(0, 50) + "..." : link.url}
+                                                                </a>
+                                                                {link.postedAt && (
+                                                                  <span className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                                                                    <Clock className="h-2.5 w-2.5" />
+                                                                    {formatInEST(link.postedAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}
+                                                                  </span>
+                                                                )}
+                                                              </div>
+                                                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0"
+                                                                  onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setLinkUrl(link.url);
+                                                                    if (link.postedAt) {
+                                                                      setLinkPostedAt(utcToESTWallClock(link.postedAt));
+                                                                    }
+                                                                    setLinkDialog({ open: true, taskId: task.id, platform: pk, mode: "edit", existingUrl: link.url, existingPostedAt: link.postedAt });
+                                                                  }}
+                                                                  title="Edit link"
+                                                                >
+                                                                  <Pencil className="h-3.5 w-3.5 text-gray-500" />
+                                                                </Button>
+                                                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0 hover:bg-red-50"
+                                                                  onClick={(e) => { e.stopPropagation(); deleteSocialLink(task.id, link.platform); }}
+                                                                  title="Remove link"
+                                                                >
+                                                                  <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                                                </Button>
+                                                              </div>
+                                                            </div>
+                                                          );
+                                                        })}
+                                                      </div>
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+
+                                              {/* Deliverable Info */}
+                                              {task.clientId && task.deliverable && (
+                                                <div className="mt-4 pt-4 border-t">
+                                                  <h4 className="font-semibold mb-3 flex items-center gap-2">
+                                                    <Package className="h-4 w-4 text-indigo-500" />
+                                                    Deliverable Info
+                                                    <span className="text-xs font-normal text-muted-foreground">
+                                                      — {task.client?.companyName || task.client?.name || "Client"}
+                                                    </span>
+                                                  </h4>
+                                                  <div className="p-3 rounded-lg border-2 border-indigo-200 bg-indigo-50">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                      <div className="flex items-center gap-2">
+                                                        <span className="font-semibold text-sm">{task.deliverable.type}</span>
+                                                        {task.deliverable.isOneOff && (
+                                                          <Badge variant="outline" className="text-[10px] h-4 px-1 bg-amber-100 text-amber-700 border-amber-300">One-Off</Badge>
+                                                        )}
+                                                        {task.deliverable.isTrial && (
+                                                          <Badge variant="outline" className="text-[10px] h-4 px-1 bg-amber-100 text-amber-700 border-amber-300">TRIAL</Badge>
+                                                        )}
+                                                      </div>
+                                                      {task.deliverable.quantity && (
+                                                        <Badge variant="secondary" className="text-xs font-bold">×{task.deliverable.quantity}</Badge>
+                                                      )}
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                                                      {task.deliverable.postingSchedule && (
+                                                        <div className="flex items-center gap-1">
+                                                          <Calendar className="h-3 w-3" />
+                                                          <span className="capitalize">{task.deliverable.postingSchedule}</span>
+                                                        </div>
+                                                      )}
+                                                      {task.deliverable.postingDays?.length > 0 && (
+                                                        <span className="text-gray-500">{task.deliverable.postingDays.join(", ")}</span>
+                                                      )}
+                                                      {task.deliverable.postingTimes?.length > 0 && (
+                                                        <div className="flex items-center gap-1">
+                                                          <Clock className="h-3 w-3" />
+                                                          <span>{formatPostingTimes(task.deliverable.postingTimes)}</span>
+                                                        </div>
+                                                      )}
+                                                      {task.deliverable.videosPerDay && (
+                                                        <span>{task.deliverable.videosPerDay} video{task.deliverable.videosPerDay > 1 ? "s" : ""}/day</span>
+                                                      )}
+                                                    </div>
+                                                    {task.deliverable.platforms?.length > 0 && (
+                                                      <div className="flex items-center gap-1 mt-2 flex-wrap">
+                                                        {task.deliverable.platforms.map((p) => {
+                                                          const pk = p.toLowerCase() as PlatformKey;
+                                                          const pi = PLATFORMS[pk];
+                                                          if (!pi) return <Badge key={p} variant="outline" className="text-[10px] h-5 px-1.5">{p}</Badge>;
+                                                          const PIcon = pi.icon;
+                                                          return (
+                                                            <div key={p} className={`inline-flex items-center justify-center w-6 h-6 rounded ${pi.bgColor}`} title={p}>
+                                                              <PIcon className={`h-3.5 w-3.5 ${pi.color}`} />
+                                                            </div>
+                                                          );
+                                                        })}
+                                                      </div>
+                                                    )}
+                                                    {task.deliverable.description && (
+                                                      <p className="text-xs text-muted-foreground mt-2">{task.deliverable.description}</p>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              )}
+
+                                              {/* Linked SF Tasks — shown for LF tasks */}
+                                              {[task.deliverableType, task.deliverable?.type, task.title].some(
+                                                (v) => typeof v === "string" && (
+                                                  v.toUpperCase().includes("LF") ||
+                                                  v.toLowerCase().includes("long form") ||
+                                                  v.toLowerCase().includes("longform")
+                                                )
+                                              ) && (
+                                                <div className="mt-4 pt-4 border-t">
+                                                  <LinkedSfTasks lfTaskId={task.id} clientId={task.clientId} canEdit={false} />
+                                                </div>
+                                              )}
+                                            </td>
+                                          </tr>
+                                        )}
+                                      </React.Fragment>
+                                    );
+                                })
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+
+                {/* Load More */}
+                <div className="mt-6 flex flex-col items-center gap-4 border-t pt-6 px-2">
+                    <div className="text-sm text-muted-foreground">
+                        Showing <span className="font-medium text-foreground">{tasks.length}</span> of <span className="font-medium text-foreground">{totalTasks}</span> tasks
+                    </div>
+                    {hasMore && (
+                        <Button variant="outline" onClick={() => loadTasks(currentPage + 1, true)} disabled={loading}
+                            className="bg-white hover:bg-indigo-50 border-indigo-100 text-indigo-600 font-medium px-8 h-10 shadow-sm">
+                            {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Loading...</> : "Load More History"}
+                        </Button>
+                    )}
+                </div>
+            </div>
+
+            {/* Shoot script viewer (schedulers: view-only) */}
+            <Dialog open={!!scriptDialog?.open} onOpenChange={(open) => { if (!open) setScriptDialog(null); }}>
+                <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
+                    <DialogHeader className="px-6 pt-5 pb-3 border-b shrink-0">
+                        <DialogTitle className="flex items-center gap-2 text-base">
+                            <ScrollText className="h-4 w-4 text-violet-500" />
+                            {scriptDialog?.title || 'Shoot Script'}
+                            {scriptDialog?.status && (
+                                <span className={`ml-auto text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+                                    scriptDialog.status === 'approved' ? 'bg-green-50 text-green-700 border-green-200' :
+                                    scriptDialog.status === 'changes_requested' ? 'bg-red-50 text-red-700 border-red-200' :
+                                    scriptDialog.status === 'sent' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                    'bg-slate-100 text-slate-600 border-slate-200'
+                                }`}>
+                                    {scriptDialog.status}
+                                </span>
+                            )}
+                        </DialogTitle>
+                        <DialogDescription>View only — scripts are attached by editors on My Tasks.</DialogDescription>
+                    </DialogHeader>
+                    <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+                        {scriptDialog?.clientFeedback && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                                <p className="text-[11px] font-semibold text-amber-800 mb-1">Client Feedback</p>
+                                <p className="text-sm text-amber-900 whitespace-pre-wrap leading-relaxed">{scriptDialog.clientFeedback}</p>
+                            </div>
+                        )}
+                        <article className="whitespace-pre-wrap font-mono text-sm leading-7 text-slate-800 bg-slate-50 rounded-xl border p-5 min-h-[200px]">
+                            {scriptDialog?.content || 'No content yet.'}
+                        </article>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Add/Edit Link Dialog */}
+            <Dialog open={linkDialog?.open || false} onOpenChange={(open) => { if (!open) { setLinkDialog(null); setLinkUrl(""); setLinkPostedAt(""); } }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            {linkDialog && (() => {
+                                const platform = PLATFORMS[linkDialog.platform];
+                                const Icon = platform.icon;
+                                return (<><div className={`p-1.5 rounded-md ${platform.bgColor}`}><Icon className={`h-5 w-5 ${platform.color}`} /></div>
+                                    {linkDialog.mode === "edit" ? "Edit" : "Add"} {linkDialog.platform.charAt(0).toUpperCase() + linkDialog.platform.slice(1)} Link</>);
+                            })()}
+                        </DialogTitle>
+                        <DialogDescription>{linkDialog?.mode === "edit" ? "Update the URL for this post" : "Paste the URL of the published post"}</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                        <div>
+                            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Post URL</label>
+                            <Input placeholder="https://..." value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} disabled={submittingLink} />
+                        </div>
+                        <div>
+                            <label className="text-xs font-medium text-muted-foreground mb-1.5 flex items-center gap-1.5"><Clock className="h-3 w-3" />Posted / Scheduled Time (Eastern Time)</label>
+                            <Input type="datetime-local" value={linkPostedAt} onChange={(e) => setLinkPostedAt(e.target.value)} disabled={submittingLink} className="text-sm" />
+                            <p className="text-[10px] text-muted-foreground mt-1">Enter the time in US Eastern (ET) — leave empty to use the current time</p>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                            <Button variant="outline" onClick={() => { setLinkDialog(null); setLinkUrl(""); setLinkPostedAt(""); }} disabled={submittingLink}>Cancel</Button>
+                            <Button onClick={submitSocialLink} disabled={!linkUrl || submittingLink}>
+                                {submittingLink ? (linkDialog?.mode === "edit" ? "Updating..." : "Adding...") : (linkDialog?.mode === "edit" ? "Update Link" : "Add Link")}
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            <FilePreviewModal file={previewFile} open={isPreviewOpen} onOpenChange={setIsPreviewOpen} />
+
+            {/* Send Back Dialog */}
+            <Dialog open={showSendBackDialog} onOpenChange={setShowSendBackDialog}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-red-600">
+                            <AlertTriangle className="h-5 w-5" />Send Back to Editor
+                        </DialogTitle>
+                        <DialogDescription>
+                            {sendBackTaskTitle && <span className="block text-xs text-zinc-500 mt-1 truncate">Task: {sendBackTaskTitle}</span>}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                            The editor will be notified and the task will be returned to their queue for revision.
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="sendback-feedback">Feedback / Reason <span className="text-red-500">*</span></Label>
+                            <Textarea id="sendback-feedback" placeholder="Describe what needs to be fixed or changed before this can be scheduled…"
+                                className="min-h-[120px] resize-none" value={sendBackFeedback} onChange={(e) => setSendBackFeedback(e.target.value)} />
+                            <p className="text-xs text-muted-foreground">{sendBackFeedback.length}/500 characters</p>
+                        </div>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="outline" onClick={() => { setShowSendBackDialog(false); setSendBackFeedback(''); setSendBackTaskId(null); }}>Cancel</Button>
+                        <Button disabled={!sendBackFeedback.trim() || isSendingBack} onClick={sendBackToEditor} className="bg-red-600 hover:bg-red-700 text-white">
+                            {isSendingBack ? 'Sending…' : 'Send Back to Editor'}
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}

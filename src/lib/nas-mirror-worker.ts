@@ -1,0 +1,198 @@
+// src/lib/nas-mirror-worker.ts
+// Background worker — processes NasMirrorJob rows (copy R2 -> NAS MinIO,
+// verify, delete verified files from R2, update File records).
+// Called by cron-master on an interval, same pattern as upload-worker.ts.
+//
+// Handles both job types:
+//   - outputs:     prefix = <clientName>/outputs/<monthFolder>/
+//   - raw-footage: prefix = <clientName>/raw-footage/<folderPath>/
+//                  (folderPath can be a whole month or a specific shoot
+//                  subfolder, selected via the folder-browser UI)
+//
+// A mirror job can involve many large video files and take a long time — so
+// one tick either starts a new job (if none is running) or does nothing.
+// The job runs to completion within that single tick call; cron-master's
+// setInterval just won't re-enter while isRunning is true.
+
+import { S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateBucketCommand } from '@aws-sdk/client-s3';
+import { getDbHttp } from '@/lib/db';
+import { file as fileTable } from '@/lib/db/schema';
+import { eq } from 'drizzle-orm';
+import { getS3, BUCKET as R2_BUCKET } from '@/lib/s3';
+import { getNasS3, NAS_BUCKET } from '@/lib/nas-s3';
+import {
+  popPendingNasMirrorJob,
+  updateNasMirrorJobProgress,
+  completeNasMirrorJob,
+  failNasMirrorJob,
+  recoverStuckNasMirrorJobs,
+} from '@/lib/nas-mirror-queue';
+
+let isRunning = false;
+
+export async function runNasMirrorWorkerTick(): Promise<void> {
+  if (isRunning) return;
+  isRunning = true;
+
+  try {
+    await recoverStuckNasMirrorJobs();
+
+    const job = await popPendingNasMirrorJob();
+    if (!job) return;
+
+    await processJob(job.id, job.clientName, job.folderType, job.monthFolder, job.folderPath);
+  } catch (err: any) {
+    console.error('[NasMirrorWorker] Tick error:', err.message);
+  } finally {
+    isRunning = false;
+  }
+}
+
+async function* listR2Keys(r2: S3Client, prefix: string) {
+  let ContinuationToken: string | undefined;
+  do {
+    const page = await r2.send(new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: prefix, ContinuationToken }));
+    for (const obj of page.Contents || []) {
+      if (obj.Key) yield obj;
+    }
+    ContinuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (ContinuationToken);
+}
+
+async function headOnNas(nas: S3Client, key: string): Promise<{ ok: boolean; size?: number }> {
+  try {
+    const head = await nas.send(new HeadObjectCommand({ Bucket: NAS_BUCKET, Key: key }));
+    return { ok: true, size: head.ContentLength };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function copyToNas(r2: S3Client, nas: S3Client, key: string, expectedSize: number) {
+  const { Body, ContentType } = await r2.send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+  await nas.send(new PutObjectCommand({
+    Bucket: NAS_BUCKET,
+    Key: key,
+    Body: Body as any,
+    ContentLength: expectedSize,
+    ContentType,
+  }));
+}
+
+function buildPrefix(clientName: string, folderType: string, monthFolder: string, folderPath: string | null, rawFootageRoot?: string | null): string {
+  if (folderType === 'raw-footage') {
+    const relPath = folderPath || monthFolder;
+    // 🔥 Use the client's actual rawFootageFolderId when known (passed in
+    // from processJob, resolved from the DB) instead of reconstructing
+    // "<clientName>/raw-footage/" from the current display name — a client
+    // renamed after its folders were provisioned would otherwise mismatch
+    // the prefix real uploads used, same fix as /api/nas/browse-folders.
+    const root = rawFootageRoot || `${clientName}/raw-footage/`;
+    return `${root}${relPath}/`;
+  }
+  return `${clientName}/outputs/${monthFolder}/`;
+}
+
+async function processJob(
+  jobId: string,
+  clientName: string,
+  folderType: string,
+  monthFolder: string,
+  folderPath: string | null
+) {
+  const db = getDbHttp();
+  const label = folderType === 'raw-footage' ? (folderPath || monthFolder) : monthFolder;
+  console.log(`[NasMirrorWorker] Starting job ${jobId}: ${clientName} / ${folderType} / ${label}`);
+
+  let rawFootageRoot: string | null = null;
+  if (folderType === 'raw-footage') {
+    const { client: clientTable } = await import('@/lib/db/schema');
+    const { or, eq } = await import('drizzle-orm');
+    const [foundClient] = await db
+      .select({ rawFootageFolderId: clientTable.rawFootageFolderId })
+      .from(clientTable)
+      .where(or(eq(clientTable.companyName, clientName), eq(clientTable.name, clientName)))
+      .limit(1);
+    if (foundClient?.rawFootageFolderId) {
+      rawFootageRoot = foundClient.rawFootageFolderId.endsWith('/')
+        ? foundClient.rawFootageFolderId
+        : `${foundClient.rawFootageFolderId}/`;
+    }
+  }
+
+  const r2 = getS3();
+  const nas = getNasS3();
+  const prefix = buildPrefix(clientName, folderType, monthFolder, folderPath, rawFootageRoot);
+
+  try {
+    await nas.send(new CreateBucketCommand({ Bucket: NAS_BUCKET }));
+  } catch (err: any) {
+    if (err.name !== 'BucketAlreadyOwnedByYou' && err.name !== 'BucketAlreadyExists') {
+      await failNasMirrorJob(jobId, `Failed to ensure NAS bucket: ${err.message}`);
+      return;
+    }
+  }
+
+  let scanned = 0, copied = 0, verified = 0, deleted = 0, failed = 0;
+
+  try {
+    for await (const obj of listR2Keys(r2, prefix)) {
+      const key = obj.Key!;
+      const size = obj.Size ?? 0;
+      scanned++;
+      await updateNasMirrorJobProgress(jobId, { scannedCount: scanned, currentFile: key });
+
+      let head = await headOnNas(nas, key);
+      if (!(head.ok && head.size === size)) {
+        try {
+          await copyToNas(r2, nas, key, size);
+          copied++;
+          head = await headOnNas(nas, key);
+        } catch (err: any) {
+          console.error(`[NasMirrorWorker] Copy failed for ${key}: ${err.message}`);
+          failed++;
+          await updateNasMirrorJobProgress(jobId, { copiedCount: copied, failedCount: failed });
+          continue;
+        }
+      }
+
+      if (!(head.ok && head.size === size)) {
+        console.error(`[NasMirrorWorker] Verify failed for ${key}`);
+        failed++;
+        await updateNasMirrorJobProgress(jobId, { copiedCount: copied, failedCount: failed });
+        continue;
+      }
+
+      verified++;
+
+      // Verified — safe to delete from R2 and mark archived.
+      try {
+        await r2.send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+        await db.update(fileTable).set({
+          deletedFromCloud: true,
+          deletedFromCloudAt: new Date().toISOString(),
+          archivedToNas: true,
+          nasArchivedAt: new Date().toISOString(),
+          nasPath: `minio://${NAS_BUCKET}`,
+        }).where(eq(fileTable.s3Key, key));
+        deleted++;
+      } catch (err: any) {
+        console.error(`[NasMirrorWorker] Delete failed for ${key}: ${err.message}`);
+        failed++;
+      }
+
+      await updateNasMirrorJobProgress(jobId, {
+        copiedCount: copied,
+        verifiedCount: verified,
+        deletedCount: deleted,
+        failedCount: failed,
+      });
+    }
+
+    await completeNasMirrorJob(jobId);
+    console.log(`[NasMirrorWorker] Job ${jobId} done — scanned ${scanned}, copied ${copied}, verified ${verified}, deleted ${deleted}, failed ${failed}`);
+  } catch (err: any) {
+    console.error(`[NasMirrorWorker] Job ${jobId} crashed:`, err.message);
+    await failNasMirrorJob(jobId, err.message);
+  }
+}

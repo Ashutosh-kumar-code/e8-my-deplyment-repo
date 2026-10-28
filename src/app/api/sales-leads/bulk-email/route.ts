@@ -1,0 +1,113 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getDbHttp } from '@/lib/db';
+import { salesLead } from '@/lib/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
+import jwt from 'jsonwebtoken';
+import { sendRawEmail } from '@/lib/email';
+import { getVisibleSalesRepIds } from '@/lib/salesManagerPermissions';
+
+function getTokenFromCookies(req: Request) {
+    const cookieHeader = req.headers.get('cookie');
+    if (!cookieHeader) return null;
+    const match = cookieHeader.match(/authToken=([^;]+)/);
+    return match ? match[1] : null;
+}
+
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export async function POST(req: NextRequest) {
+  const db = getDbHttp();
+    try {
+        const token = getTokenFromCookies(req);
+        if (!token) return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 });
+
+        const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+        if (!decoded?.userId) return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 });
+        if (!['sales', 'admin', 'sales_manager'].includes(decoded.role)) {
+            return NextResponse.json({ ok: false, message: 'Forbidden' }, { status: 403 });
+        }
+
+        const { leadIds, subject, body } = await req.json();
+        if (typeof subject !== 'string' || !subject.trim() || typeof body !== 'string' || !body.trim()) {
+            return NextResponse.json({ ok: false, message: 'Subject and body are required' }, { status: 400 });
+        }
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return NextResponse.json({ ok: false, message: 'No leads selected' }, { status: 400 });
+        }
+
+        const ownershipCondition =
+            decoded.role === 'admin'
+                ? undefined
+                : decoded.role === 'sales_manager'
+                    ? inArray(salesLead.userId, await getVisibleSalesRepIds(Number(decoded.userId)))
+                    : eq(salesLead.userId, decoded.userId);
+
+        const leads = await db.select().from(salesLead)
+            .where(ownershipCondition ? and(inArray(salesLead.id, leadIds), ownershipCondition) : inArray(salesLead.id, leadIds));
+
+        if (leads.length === 0) {
+            return NextResponse.json({ ok: false, message: 'Leads not found' }, { status: 404 });
+        }
+
+        const results = {
+            success: 0,
+            failed: 0,
+            errors: [] as string[],
+        };
+
+        // Send emails sequentially or in small batches
+        for (const lead of leads) {
+            if (!lead.email) {
+                results.failed++;
+                results.errors.push(`Lead ${lead.name} has no email`);
+                continue;
+            }
+
+            // Replace variables
+            // Function replacers so "$&"-style sequences in a lead's name are inserted
+            // literally, and lead-supplied values are HTML-escaped before going into the email.
+            const personalizedBody = escapeHtml(body)
+                .replace(/{name}/g, () => escapeHtml(lead.name || 'there'))
+                .replace(/{company}/g, () => escapeHtml(lead.company || 'your company'));
+
+            const emailHtml = `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px;">
+                    ${personalizedBody.replace(/\n/g, '<br/>')}
+                </div>
+                <br/>
+                <div style="font-size: 12px; color: #999; border-top: 1px solid #eee; padding-top: 10px;">
+                    Sent via E8 Productions Portal
+                </div>
+            `;
+
+            const res = await sendRawEmail({
+                to: lead.email,
+                subject,
+                html: emailHtml
+            });
+
+            if (res.success) {
+                results.success++;
+                // Log activity or update lead status
+                await db.update(salesLead).set({
+                    emailed: true,
+                    emailedAt: new Date().toISOString(),
+                    notes: (lead.notes || '') + `\n[${new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' })}] Bulk email sent: ${subject}`,
+                    updatedAt: new Date().toISOString(),
+                }).where(eq(salesLead.id, lead.id));
+            } else {
+                results.failed++;
+                results.errors.push(`Failed to send to ${lead.email}: ${res.error}`);
+            }
+        }
+
+        return NextResponse.json({ ok: true, results });
+
+    } catch (err) {
+        console.error('[POST /api/sales-leads/bulk-email]', err);
+        return NextResponse.json({ ok: false, message: 'Server error' }, { status: 500 });
+    }
+}

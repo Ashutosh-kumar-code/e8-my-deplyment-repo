@@ -1,0 +1,133 @@
+export const dynamic = 'force-dynamic';
+
+import { NextResponse } from 'next/server';
+import { getDbHttp } from '@/lib/db';
+import { employeeDocument, user as userTable } from '@/lib/db/schema';
+import { createId } from '@/lib/db/id';
+import { eq, desc } from 'drizzle-orm';
+import { getCurrentUser2, requireAdmin } from '@/lib/auth';
+import { uploadBufferToS3 } from '@/lib/s3';
+
+// GET /api/employee/[employeeId]/documents
+// Lists an employee's documents (metadata only — no signed URLs here;
+// use GET .../documents/[docId]/download for an actual download link).
+// Accessible by admins/managers (any employee) or the employee themself.
+export async function GET(
+  req: Request,
+  context: { params: { employeeId: string } },
+) {
+  const db = getDbHttp();
+  const { employeeId } = await context.params;
+  const id = Number(employeeId);
+  if (!Number.isFinite(id)) {
+    return NextResponse.json({ error: 'Invalid employee id' }, { status: 400 });
+  }
+
+  const user = await getCurrentUser2(req as any);
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const role = user.role?.toLowerCase();
+  const isSelf = user.id === id;
+  const isAdmin = role === 'admin' || role === 'manager';
+  if (!isSelf && !isAdmin) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const documents = await db.select({
+    id: employeeDocument.id,
+    title: employeeDocument.title,
+    fileName: employeeDocument.fileName,
+    fileSize: employeeDocument.fileSize,
+    createdAt: employeeDocument.createdAt,
+    uploadedById: employeeDocument.uploadedById,
+  }).from(employeeDocument).where(eq(employeeDocument.employeeId, id)).orderBy(desc(employeeDocument.createdAt));
+
+  return NextResponse.json({ documents });
+}
+
+// POST /api/employee/[employeeId]/documents
+// Admin/manager-only. Uploads a document (e.g. employment contract, offer
+// letter) to R2 and attaches it to the employee's record. The employee can
+// then view and download it from their own Employment Info page.
+export async function POST(
+  req: Request,
+  context: { params: { employeeId: string } },
+) {
+  const db = getDbHttp();
+  try {
+    const admin = await requireAdmin(req as any);
+
+    const { employeeId } = await context.params;
+    const id = Number(employeeId);
+    if (!Number.isFinite(id)) {
+      return NextResponse.json({ error: 'Invalid employee id' }, { status: 400 });
+    }
+
+    const [employee] = await db.select().from(userTable).where(eq(userTable.id, id)).limit(1);
+    if (!employee) {
+      return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
+    }
+
+    const form = await req.formData();
+    const file = form.get('file') as File | null;
+    const title = (form.get('title') as string) || file?.name || 'Document';
+
+    if (!file) {
+      return NextResponse.json({ error: 'Missing file' }, { status: 400 });
+    }
+
+    const ALLOWED_MIME_TYPES = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'text/plain',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+    ];
+    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+      return NextResponse.json(
+        { error: 'Unsupported file type. Please upload a PDF, Word, Excel, PowerPoint, Text file, or image.' },
+        { status: 400 },
+      );
+    }
+
+    const MAX_SIZE = 25 * 1024 * 1024; // 25MB
+    if (file.size > MAX_SIZE) {
+      return NextResponse.json({ error: 'File too large (max 25MB)' }, { status: 400 });
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const folderPrefix = `employee-documents/${id}/`;
+
+    const upload = await uploadBufferToS3({
+      buffer,
+      folderPrefix,
+      filename: `${Date.now()}_${safeName}`,
+      mimeType: file.type,
+    });
+
+    const [document] = await db.insert(employeeDocument).values({
+      id: createId(),
+      employeeId: id,
+      title,
+      s3Key: upload.key,
+      fileName: file.name,
+      fileSize: file.size,
+      uploadedById: admin.id,
+    }).returning();
+
+    return NextResponse.json({ document });
+  } catch (err: any) {
+    console.error('[employee/documents POST]', err);
+    const status = err?.status || 500;
+    const msg = err?.message || 'Upload failed';
+    return NextResponse.json({ error: msg }, { status });
+  }
+}

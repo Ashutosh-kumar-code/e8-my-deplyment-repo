@@ -1,0 +1,2814 @@
+generator client {
+  provider      = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                              Int                             @id @default(autoincrement())
+  name                            String?
+  email                           String
+  password                        String?
+  image                           String?
+  role                            Role?
+  hourlyRate                      Decimal?                        @db.Decimal(10, 2)
+  monthlyBaseHours                Int?
+  employeeStatus                  EmployeeStatus?                 @default(ACTIVE)
+  joinedAt                        DateTime?
+  worksOnSaturday                 Boolean                         @default(false)
+  createdAt                       DateTime                        @default(now())
+  updatedAt                       DateTime                        @updatedAt
+  resetOTP                        String?
+  resetOTPExpiry                  DateTime?
+  hoursPerWeek                    Decimal?                        @default(0) @db.Decimal(5, 2)
+  phone                           String?                         @unique
+  monthlyRate                     Int?
+  linkedClientId                  String?
+  emailNotifications              Boolean                         @default(true)
+  slackNotifications              Boolean                         @default(false)
+  slackUserId                     String?
+  loginOTP                        String?
+  loginOTPExpiry                  DateTime?
+  timeClockEntries                TimeClockEntry[]
+  roles                           Role[]                          @default([])
+  accounts                        Account[]
+  affiliateCommissions            AffiliateCommission[]
+  auditLogs                       AuditLog[]
+  bids                            Bid[]
+  bonuses                         Bonus[]
+  client                          Client?
+  ClientExpense                   ClientExpense[]
+  ClientPortalAccess              ClientPortalAccess[]
+  commissionAdjustments           CommissionAdjustment[]
+  commissionPayouts               CommissionPayout[]
+  createdContracts                Contract[]                      @relation("ContractCreator")
+  deductions                      Deduction[]
+  DriveNote                       DriveNote[]
+  editorClientPermissions         EditorClientPermission[]        @relation("EditorPermissions")
+  eodReports                      EditorEodReport[]
+  employeeDocuments               EmployeeDocument[]              @relation("EmployeeDocumentOwner")
+  uploadedEmployeeDocs            EmployeeDocument[]              @relation("EmployeeDocumentUploader")
+  Equipment                       Equipment[]
+  ExpenseTrip                     ExpenseTrip[]
+  feedbackSent                    Feedback[]                      @relation("FeedbackSender")
+  userInvitesSent                 UserInvite[]                    @relation("UserInviteInviter")
+  announcementsCreated            Announcement[]                  @relation("AnnouncementCreator")
+  announcementReads               AnnouncementRead[]              @relation("AnnouncementReads")
+  strikesReceived                 Strike[]                        @relation("StrikeRecipient")
+  strikesSent                     Strike[]                        @relation("StrikeSender")
+  strikesRevoked                  Strike[]                        @relation("StrikeRevoker")
+  devTicketsReported              DevTicket[]                     @relation("DevTicketReporter")
+  devTicketsAssigned              DevTicket[]                     @relation("DevTicketAssignee")
+  devTicketAttachments            DevTicketAttachment[]           @relation("DevTicketAttachmentUploader")
+  devTicketComments               DevTicketComment[]              @relation("DevTicketCommentAuthor")
+  feedbackResponses               FeedbackResponse[]              @relation("FeedbackResponseSender")
+  folderStatusUpdates             FolderStatus[]
+  helpVideos                      HelpVideo[]
+  convertedFromCandidate          HiringCandidate?                @relation("ConvertedCandidateUser")
+  hiringCandidatesAdded           HiringCandidate[]
+  hiringTestTasksReviewed         HiringTestTask[]
+  invoicesCreated                 Invoice[]                       @relation("InvoiceCreator")
+  assignedJobs                    Job[]                           @relation("JobAssignee")
+  createdJobs                     Job[]                           @relation("JobCreator")
+  leaves                          Leave[]
+  loginAuditLogs                  LoginAuditLog[]
+  NasMirrorJob                    NasMirrorJob[]
+  payrolls                        Payroll[]
+  PreClient                       PreClient[]
+  achievements                    QCAchievement[]
+  qcAnalytics                     QCAnalytics[]
+  categoryMetrics                 QCCategoryMetrics[]
+  monthlyTrends                   QCMonthlyTrend[]
+  rejectionReasons                QCRejectionReason[]
+  salesActivityLogs               SalesActivityLog[]
+  salesLeads                      SalesLead[]
+  salesLeadGenerationJobs         SalesLeadGenerationJob[]
+  salesManagerPermissions         SalesManagerPermission[]        @relation("SalesManagerPermissions")
+  salesRepPermissions             SalesManagerPermission[]        @relation("SalesRepPermissions")
+  payoutProfile                   SalesRepPayoutProfile?
+  schedulerActivityDailySummaries SchedulerActivityDailySummary[]
+  schedulerActivityEvents         SchedulerActivityEvent[]
+  sessions                        Session[]
+  shootDetails                    ShootDetail[]                   @relation("VideographerShootDetails")
+  updatedSocialLogins             SocialLogin[]                   @relation("LoginUpdatedBy")
+  assignedTasks                   Task[]                          @relation("AssignedTasks")
+  clientTasks                     Task[]                          @relation("ClientUserTasks")
+  qcReviewedTasks                 Task[]                          @relation("QCReviewedTasks")
+  taskFeedback                    TaskFeedback[]                  @relation("TaskFeedbackAuthor")
+  linkedClient                    Client?                         @relation("LinkedClientUsers", fields: [linkedClientId], references: [id])
+  securityPin                     UserSecurityPin?
+  twoFactorAuth                   UserTwoFactorAuth?
+
+  @@index([email])
+  @@index([role])
+  @@index([employeeStatus])
+  @@index([linkedClientId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            Int
+  type              String  @default("pending")
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       Int
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model TimeClockEntry {
+  id            String    @id @default(cuid())
+  userId        Int
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // EST calendar date this entry belongs to, e.g. "2026-09-25".
+  // Computed server-side via getESTDateString() — never trust a client-sent date.
+  workDate      String
+
+  clockInAt     DateTime
+  clockOutAt    DateTime?
+
+  // true if a nightly cron closed this out because the user forgot to
+  // click Stop — lets the admin UI show "auto-closed" instead of a fake
+  // precise stop time.
+  autoClosedOut Boolean   @default(false)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, workDate])
+  @@index([userId])
+  @@index([workDate])
+}
+
+
+model Task {
+  id                    String                @id @default(cuid())
+  title                 String?
+  description           String
+  taskType              String?
+  status                TaskStatus?           @default(PENDING)
+  dueDate               DateTime?
+  clientUserId          Int?
+  folderType            String?
+  assignedTo            Int
+  qc_specialist         Int?
+  scheduler             Int?
+  videographer          Int?
+  createdBy             Int?
+  clientId              String?
+  monthlyDeliverableId  String?
+  driveFolderId         String?
+  attachments           Json?
+  driveLinks            String[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  priority              String?
+  taskCategory          String?
+  nextDestination       String?
+  clientReview          Boolean?              @default(false)
+  requiresClientReview  Boolean?              @default(false)
+  workflowStep          String?
+  feedback              String?
+  qcNotes               String?
+  qcResult              String?
+  route                 String?
+  monthFolder           String?
+  outputFolderId        String?
+  deliverableType       String?
+  hasCovers             Boolean               @default(false)
+  hasMainFile           Boolean               @default(false)
+  hasMusicLicense       Boolean               @default(false)
+  hasThumbnails         Boolean               @default(false)
+  hasTiles              Boolean               @default(false)
+  socialMediaLinks      Json                  @default("[]")
+  platform              String?
+  suggestedTitles       Json?
+  titlingError          String?
+  titlingStatus         String                @default("NONE")
+  transcript            String?
+  transcriptSummary     String?
+  qcReviewedAt          DateTime?
+  qcReviewedBy          Int?
+  oneOffDeliverableId   String?
+  recurringMonth        String?
+  billedAt              DateTime?
+  invoiceId             String?
+  isTrial               Boolean               @default(false)
+  extraSequence         Int?
+  isExtra               Boolean               @default(false)
+  relatedTaskId         String?
+  titleSetByQC          Boolean               @default(false)
+  postingTitle          String?
+  isSponsored           Boolean               @default(false)
+  titleSetByClient      Boolean               @default(false)
+  postingDescriptions   Json?
+  postingTags           Json?
+  postingTitles         Json?
+  clientRejectionCount  Int                   @default(0)
+  lastClientRejectedAt  DateTime?
+  isFinalRevision       Boolean               @default(false)
+  textContent           String?
+  clientReviewStartedAt DateTime?
+  lastReminderSentAt    DateTime?
+  linkedRawFootagePaths String[]
+  shootScriptRef        String?
+  eodReportItems        EditorEodReportItem[]
+  files                 File[]
+  templateFor           RecurringTask[]       @relation("TemplateTask")
+  shootDetail           ShootDetail?
+  SocialPost            SocialPost[]
+  rawFootageFolders     RawFootageFolder[]
+  deliverableScripts    DeliverableScript[]
+  user                  User                  @relation("AssignedTasks", fields: [assignedTo], references: [id])
+  client                Client?               @relation(fields: [clientId], references: [id])
+  clientUser            User?                 @relation("ClientUserTasks", fields: [clientUserId], references: [id])
+  invoice               Invoice?              @relation(fields: [invoiceId], references: [id])
+  monthlyDeliverable    MonthlyDeliverable?   @relation(fields: [monthlyDeliverableId], references: [id])
+  oneOffDeliverable     OneOffDeliverable?    @relation(fields: [oneOffDeliverableId], references: [id])
+  qcReviewer            User?                 @relation("QCReviewedTasks", fields: [qcReviewedBy], references: [id])
+  relatedTask           Task?                 @relation("RelatedTasks", fields: [relatedTaskId], references: [id])
+  relatedTasks          Task[]                @relation("RelatedTasks")
+  taskFeedback          TaskFeedback[]
+  titlingJob            TitlingJob?
+  tags                  Tag[]                 @relation("TagToTask")
+
+  @@index([assignedTo])
+  @@index([clientId])
+  @@index([status])
+  @@index([monthFolder])
+  @@index([qc_specialist])
+  @@index([scheduler])
+  @@index([videographer])
+  @@index([clientUserId])
+  @@index([createdAt])
+  @@index([assignedTo, status])
+  @@index([clientId, status])
+  @@index([dueDate, status])
+  @@index([qcReviewedBy])
+  @@index([clientId, monthlyDeliverableId, monthFolder])
+  @@index([isExtra])
+  @@index([clientReviewStartedAt])
+  @@index([clientRejectionCount, status])
+}
+
+model ShootDetail {
+  id                         String    @id @default(cuid())
+  taskId                     String    @unique
+  location                   String?
+  shootDate                  DateTime?
+  referenceLinks             String[]
+  referenceFiles             Json?
+  camera                     String?
+  quality                    String?
+  frameRate                  String?
+  lighting                   String?
+  exclusions                 String?
+  videographerNotes          String?
+  videographerId             Int?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+  hostName                   String?
+  hostId                     Int?
+  hostRole                   String?
+  hostWardrobe               String?
+  hostRate                   Decimal?                @db.Decimal(10, 2)
+  hostNotes                  String?
+  equipmentIds               String[]
+  equipmentReturnedAt        DateTime?
+  equipmentReturnedPhotoUrl  String?
+  equipmentReturnedBy        Int?
+  equipmentReturnedPhotoUrls String[]
+  scriptContent              String?
+  scriptStatus               String    @default("draft")
+  scriptSentAt               DateTime?
+  scriptSentBy               Int?
+  scriptLastEditedAt         DateTime?
+  scriptLastEditedBy         Int?
+  task                       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  videographer               User?     @relation("VideographerShootDetails", fields: [videographerId], references: [id])
+}
+
+model TitlingJob {
+  id            String    @id @default(cuid())
+  taskId        String    @unique
+  status        String    @default("PENDING")
+  assemblyId    String?
+  error         String?
+  attempts      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  startedAt     DateTime?
+  completedAt   DateTime?
+  videoFileId   String?
+  videoFileName String?
+  videoDuration Int?
+  task          Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([assemblyId])
+  @@index([createdAt])
+}
+
+model TaskFeedback {
+  id               String    @id @default(cuid())
+  taskId           String
+  fileId           String?
+  folderType       String
+  feedback         String
+  status           String    @default("needs_revision")
+  timestamp        String?
+  category         String?
+  createdBy        Int
+  resolvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  acknowledgedAt   DateTime?
+  acknowledgedBy   Int?
+  screenshotUrl    String?
+  annotations      Json?
+  voiceUrl         String?
+  voiceDurationSec Int?
+  attachments      Json?
+  user             User      @relation("TaskFeedbackAuthor", fields: [createdBy], references: [id])
+  file             File?     @relation(fields: [fileId], references: [id])
+  task             Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([fileId])
+  @@index([taskId, folderType])
+}
+
+model RecurringTask {
+  id                  String             @id @default(cuid())
+  clientId            String
+  deliverableId       String
+  templateTaskId      String?
+  nextRunDate         DateTime
+  lastRunDate         DateTime?
+  scheduleType        String
+  active              Boolean            @default(true)
+  createdAt           DateTime           @default(now())
+  defaultAssignedTo   Int?
+  defaultQcSpecialist Int?
+  defaultScheduler    Int?
+  defaultVideographer Int?
+  client              Client             @relation(fields: [clientId], references: [id])
+  deliverable         MonthlyDeliverable @relation(fields: [deliverableId], references: [id])
+  templateTask        Task?              @relation("TemplateTask", fields: [templateTaskId], references: [id])
+}
+
+model Client {
+  id                           String                   @id @default(cuid())
+  userId                       Int?                     @unique
+  name                         String
+  email                        String
+  companyName                  String?
+  taskNamePrefix               String?
+  phone                        String
+  createdBy                    String?
+  status                       String                   @default("active")
+  accountManagerId             String?
+  startDate                    DateTime?
+  renewalDate                  DateTime?
+  lastActivity                 DateTime?
+  requiresClientReview         Boolean                  @default(false)
+  requiresVideographer         Boolean                  @default(false)
+  createdAt                    DateTime                 @default(now())
+  updatedAt                    DateTime                 @updatedAt
+  uploadedFiles                Json?
+  brandGuidelines              Json?
+  projectSettings              Json?
+  billing                      Json?
+  postingSchedule              Json?
+  currentProgress              Json?
+  driveFolderId                String?
+  rawFootageFolderId           String?
+  essentialsFolderId           String?
+  emails                       String[]                 @default([])
+  phones                       String[]                 @default([])
+  outputsFolderId              String?
+  slackChannelName             String?
+  slackEnabled                 Boolean                  @default(false)
+  slackWebhookUrl              String?
+  hasPostingServices           Boolean                  @default(true)
+  rawFootageStorageUsed        BigInt?                  @default(0)
+  rawFootageStorageLimit       BigInt?                  @default(3298534883328)
+  storageAlert90Sent           Boolean?                 @default(false)
+  storageAlert95Sent           Boolean?                 @default(false)
+  storageLastCalculated        DateTime?                @db.Timestamp(6)
+  isTrial                      Boolean                  @default(false)
+  clientReviewDeliverableTypes String[]                 @default([])
+  rawFootageLinks              Json                     @default("[]")
+  portalPasswordSet            Boolean                  @default(false)
+  preClientId                  String?                  @unique
+  welcomeVideoWatched          Boolean                  @default(false)
+  requiresCoverImage           Boolean                  @default(false)
+  templateHashtags             String[]                 @default([])
+  address                      String?
+  shootDaysPerMonth            Int                      @default(0)
+  scriptsRequired              Boolean                  @default(false)
+  brandAssets                  BrandAsset[]
+  user                         User?                    @relation(fields: [userId], references: [id])
+  portalAccess                 ClientPortalAccess?
+  revenues                     ClientRevenue[]
+  DriveNote                    DriveNote[]
+  editorClientPermissions      EditorClientPermission[] @relation("EditorClientPerms")
+  ExpenseTrip                  ExpenseTrip[]
+  facebookPages                FacebookPage[]
+  folderStatuses               FolderStatus[]
+  guidelines                   Guideline[]
+  jobs                         Job[]
+  meetingNotes                 MeetingNote[]
+  metaAccount                  MetaAccount?
+  metaSnapshots                MetaSnapshot[]
+  monthlyDeliverables          MonthlyDeliverable[]
+  monthlyRuns                  MonthlyRun[]
+  OnboardingToken              OnboardingToken?
+  oneOffDeliverables           OneOffDeliverable[]
+  postedContents               PostedContent[]
+  postingTargets               PostingTarget[]
+  rawFootageFolders            RawFootageFolder[]
+  deliverableScripts           DeliverableScript[]
+  recurringTasks               RecurringTask[]
+  SocialAccount                SocialAccount[]
+  socialLogins                 SocialLogin[]
+  stripeCustomer               StripeCustomer?
+  tasks                        Task[]
+  linkedUsers                  User[]                   @relation("LinkedClientUsers")
+  youtubeChannel               YouTubeChannel?
+  youtubeSnapshots             YouTubeSnapshot[]
+
+  @@index([status])
+}
+
+model MonthlyDeliverable {
+  id              String          @id @default(cuid())
+  clientId        String
+  type            String
+  quantity        Int
+  videosPerDay    Int
+  postingSchedule String
+  postingDays     String[]
+  postingTimes    String[]
+  platforms       String[]
+  description     String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  isTrial         Boolean         @default(false)
+  client          Client          @relation(fields: [clientId], references: [id])
+  recurringTasks  RecurringTask[]
+  tasks           Task[]
+}
+
+model OneOffDeliverable {
+  id              String    @id @default(cuid())
+  clientId        String
+  type            String
+  quantity        Int
+  videosPerDay    Int
+  postingSchedule String
+  postingDays     String[]
+  postingTimes    String[]
+  platforms       String[]
+  description     String?
+  status          String    @default("PENDING")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  billedAt        DateTime?
+  invoiceId       String?
+  unitPrice       Int?
+  client          Client    @relation(fields: [clientId], references: [id])
+  invoice         Invoice?  @relation(fields: [invoiceId], references: [id])
+  tasks           Task[]
+}
+
+model BrandAsset {
+  id         String   @id @default(cuid())
+  clientId   String
+  name       String
+  type       String
+  fileUrl    String
+  fileName   String
+  fileSize   String
+  uploadedAt DateTime @default(now())
+  uploadedBy String
+  client     Client   @relation(fields: [clientId], references: [id])
+}
+
+model File {
+  id                 String         @id @default(cuid())
+  taskId             String
+  name               String
+  url                String
+  mimeType           String?
+  size               BigInt
+  uploadedAt         DateTime       @default(now())
+  uploadedBy         Int?
+  createdAt          DateTime       @default(now())
+  folderType         String?
+  isActive           Boolean        @default(true)
+  replacedAt         DateTime?
+  replacedBy         String?
+  revisionNote       String?
+  s3Key              String?
+  version            Int            @default(1)
+  codec              String?
+  archivedToNas      Boolean        @default(false)
+  nasArchivedAt      DateTime?
+  nasPath            String?
+  proxyUrl           String?
+  optimizationError  String?
+  optimizationStatus String         @default("NONE")
+  reviewDriveUrl     String?
+  deletedFromCloud   Boolean        @default(false)
+  deletedFromCloudAt DateTime?
+  youtubeUploadedAt  DateTime?
+  youtubeVideoId     String?
+  youtubeLinkedBy    Int?
+  storageBackend     String         @default("r2")
+  task               Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  feedback           TaskFeedback[]
+
+  @@index([taskId, folderType])
+  @@index([taskId, isActive])
+  @@index([storageBackend])
+}
+
+model UploadBackendConfig {
+  id                  String    @id
+  activeBackend       String    @default("r2")
+  switchedAt          DateTime  @default(now())
+  switchedBy          Int?
+  migrationInProgress Boolean   @default(false)
+  lastCanaryAt        DateTime?
+  lastCanaryOk        Boolean?
+  lastCanaryError     String?
+  updatedAt           DateTime  @default(now())
+}
+
+model MediaPreview {
+  id                    String   @id @default(cuid())
+  s3Key                 String   @unique
+  fileId                String?
+  taskId                String?
+  previewS3Key          String?
+  status                String   @default("PENDING")
+  width                 Int?
+  height                Int?
+  durationSeconds       Float?
+  frameTimestampSeconds Float?
+  sourceEtag            String?
+  attempts              Int      @default(0)
+  errorMessage          String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([fileId])
+  @@index([taskId])
+  @@index([previewS3Key])
+  @@index([status])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    Int?
+  type      String
+  title     String
+  body      String?
+  payload   Json?
+  channel   String[] @default([])
+  delivered Boolean  @default(false)
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, read])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    Int
+  channel   String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, channel])
+}
+
+model MonthlyRun {
+  id       String   @id @default(cuid())
+  clientId String
+  month    Int
+  year     Int
+  runAt    DateTime @default(now())
+  client   Client   @relation(fields: [clientId], references: [id])
+}
+
+model Bonus {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  amount     Decimal  @db.Decimal(12, 2)
+  addedBy    Int?
+  createdAt  DateTime @default(now())
+  employee   User     @relation(fields: [employeeId], references: [id])
+}
+
+model Leave {
+  id           Int         @id @default(autoincrement())
+  employeeId   Int
+  startDate    DateTime
+  endDate      DateTime
+  reason       String?
+  status       LeaveStatus @default(PENDING)
+  numberOfDays Int
+  approvedBy   Int?
+  createdAt    DateTime    @default(now())
+  deduction    Deduction?
+  employee     User        @relation(fields: [employeeId], references: [id])
+}
+
+model Deduction {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  amount     Decimal  @db.Decimal(12, 2)
+  leaveId    Int?     @unique
+  month      DateTime
+  createdAt  DateTime @default(now())
+  employee   User     @relation(fields: [employeeId], references: [id])
+  leave      Leave?   @relation(fields: [leaveId], references: [id])
+}
+
+model Payroll {
+  id              Int           @id @default(autoincrement())
+  employeeId      Int
+  periodStart     DateTime
+  periodEnd       DateTime
+  baseSalary      Decimal       @db.Decimal(12, 2)
+  totalBonuses    Decimal       @default(0) @db.Decimal(12, 2)
+  totalDeductions Decimal       @default(0) @db.Decimal(12, 2)
+  netPay          Decimal       @db.Decimal(12, 2)
+  status          PayrollStatus @default(PENDING)
+  createdAt       DateTime      @default(now())
+  paidAt          DateTime?
+  hidden          Boolean       @default(false)
+  employee        User          @relation(fields: [employeeId], references: [id])
+}
+
+model FolderStatus {
+  id          String   @id @default(cuid())
+  clientId    String
+  s3KeyPrefix String
+  status      String
+  updatedById Int?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  updatedBy   User?    @relation(fields: [updatedById], references: [id])
+
+  @@unique([clientId, s3KeyPrefix])
+  @@index([clientId])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String?
+  entityId  String?
+  details   String?
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  timestamp DateTime @default(now())
+  User      User?    @relation(fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([entity, entityId])
+  @@index([timestamp])
+  @@index([userId])
+}
+
+model SchedulerActivityEvent {
+  id          String   @id @default(cuid())
+  userId      Int
+  sessionId   String
+  eventType   String
+  path        String?
+  targetLabel String?
+  targetTag   String?
+  metadata    Json?
+  timestamp   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, timestamp])
+  @@index([sessionId])
+  @@index([eventType])
+}
+
+model SchedulerActivityDailySummary {
+  id            String    @id @default(cuid())
+  userId        Int
+  date          DateTime
+  activeMinutes Int       @default(0)
+  idleMinutes   Int       @default(0)
+  clickCount    Int       @default(0)
+  sessionCount  Int       @default(0)
+  firstEventAt  DateTime?
+  lastEventAt   DateTime?
+  user          User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model YoutubeQuotaUsage {
+  id        String   @id @default(cuid())
+  date      String   @unique
+  unitsUsed Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model Feedback {
+  id        String             @id @default(cuid())
+  subject   String
+  message   String
+  category  String
+  priority  String
+  status    String             @default("pending")
+  senderId  Int
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  sender    User               @relation("FeedbackSender", fields: [senderId], references: [id])
+  responses FeedbackResponse[]
+
+  @@index([senderId])
+  @@index([status])
+}
+
+model FeedbackResponse {
+  id         String   @id @default(cuid())
+  message    String
+  feedbackId String
+  senderId   Int
+  createdAt  DateTime @default(now())
+  feedback   Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  sender     User     @relation("FeedbackResponseSender", fields: [senderId], references: [id])
+
+  @@index([feedbackId])
+  @@index([senderId])
+}
+
+model SocialAccount {
+  id            String            @id @default(cuid())
+  clientId      String
+  platform      String
+  platformId    String
+  platformName  String
+  accessToken   String
+  refreshToken  String?
+  tokenExpiry   DateTime?
+  profileUrl    String?
+  profileImage  String?
+  followerCount Int               @default(0)
+  isActive      Boolean           @default(true)
+  lastSyncAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  client        Client            @relation(fields: [clientId], references: [id])
+  analytics     SocialAnalytics[]
+  posts         SocialPost[]
+
+  @@unique([clientId, platform, platformId])
+  @@index([clientId])
+  @@index([platform])
+}
+
+model SocialPost {
+  id              String        @id @default(cuid())
+  socialAccountId String
+  platformPostId  String
+  postType        String
+  title           String?
+  description     String?
+  thumbnailUrl    String?
+  postUrl         String
+  publishedAt     DateTime
+  views           Int           @default(0)
+  likes           Int           @default(0)
+  comments        Int           @default(0)
+  shares          Int           @default(0)
+  saves           Int?
+  watchTime       Int?
+  engagementRate  Float?
+  taskId          String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id])
+  task            Task?         @relation(fields: [taskId], references: [id])
+
+  @@unique([socialAccountId, platformPostId])
+  @@index([socialAccountId])
+  @@index([publishedAt])
+}
+
+model SocialAnalytics {
+  id              String        @id @default(cuid())
+  socialAccountId String
+  date            DateTime      @db.Date
+  followers       Int           @default(0)
+  followersGained Int           @default(0)
+  followersLost   Int           @default(0)
+  views           Int           @default(0)
+  likes           Int           @default(0)
+  comments        Int           @default(0)
+  shares          Int           @default(0)
+  impressions     Int?
+  reach           Int?
+  engagementRate  Float?
+  createdAt       DateTime      @default(now())
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id])
+
+  @@unique([socialAccountId, date])
+  @@index([socialAccountId, date])
+}
+
+model SocialLogin {
+  id                  String          @id @default(cuid())
+  clientId            String?
+  platform            String
+  username            String
+  encryptedPassword   String
+  recoveryEmail       String?
+  recoveryPhone       String?
+  notes               String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  updatedById         Int
+  adminOnly           Boolean         @default(false)
+  backupCodesLocation String?
+  loginUrl            String?
+  passwordChangedAt   DateTime        @default(now())
+  allowedRoles        String[]        @default([])
+  allowedUserIds      Int[]           @default([])
+  accessRole          String?
+  auditLogs           LoginAuditLog[]
+  client              Client?         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  updatedByUser       User            @relation("LoginUpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([clientId, platform])
+  @@index([clientId])
+  @@index([platform])
+  @@index([adminOnly])
+}
+
+model UserSecurityPin {
+  id             String    @id @default(cuid())
+  userId         Int       @unique
+  pinHash        String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastVerifiedAt DateTime?
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserTwoFactorAuth {
+  id             String    @id @default(cuid())
+  userId         Int       @unique
+  totpSecret     String
+  isEnabled      Boolean   @default(false)
+  backupCodes    String[]  @default([])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastVerifiedAt DateTime?
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model LoginAuditLog {
+  id        String       @id @default(cuid())
+  action    String
+  loginId   String?
+  userId    Int
+  details   String?
+  ipAddress String?
+  createdAt DateTime     @default(now())
+  login     SocialLogin? @relation(fields: [loginId], references: [id])
+  user      User         @relation(fields: [userId], references: [id])
+
+  @@index([loginId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([action])
+}
+
+model QCAnalytics {
+  id             String   @id @default(cuid())
+  qcSpecialistId Int
+  avgReviewTime  Decimal  @db.Decimal(10, 2)
+  approvalRate   Decimal  @db.Decimal(10, 2)
+  firstPassRate  Decimal  @db.Decimal(10, 2)
+  totalReviews   Int      @default(0)
+  approvedCount  Int      @default(0)
+  rejectedCount  Int      @default(0)
+  period         String   @default("month")
+  startDate      DateTime
+  endDate        DateTime
+  calculatedAt   DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  qcSpecialist   User     @relation(fields: [qcSpecialistId], references: [id])
+
+  @@unique([qcSpecialistId, period, startDate])
+  @@index([qcSpecialistId])
+  @@index([period])
+  @@index([calculatedAt])
+}
+
+model QCRejectionReason {
+  id              String   @id @default(cuid())
+  qcSpecialistId  Int
+  reason          String
+  caseCount       Int      @default(1)
+  taskIds         String[] @default([])
+  firstOccurrence DateTime @default(now())
+  lastOccurrence  DateTime @updatedAt
+  qcSpecialist    User     @relation(fields: [qcSpecialistId], references: [id])
+
+  @@unique([qcSpecialistId, reason])
+  @@index([qcSpecialistId])
+  @@index([reason])
+}
+
+model QCAchievement {
+  id              String   @id @default(cuid())
+  qcSpecialistId  Int
+  achievementType String
+  unlockedAt      DateTime @default(now())
+  achievementData Json?
+  qcSpecialist    User     @relation(fields: [qcSpecialistId], references: [id])
+
+  @@unique([qcSpecialistId, achievementType])
+  @@index([qcSpecialistId])
+  @@index([achievementType])
+}
+
+model QCMonthlyTrend {
+  id             String   @id @default(cuid())
+  qcSpecialistId Int
+  year           Int
+  month          Int
+  reviewCount    Int      @default(0)
+  approvedCount  Int      @default(0)
+  rejectedCount  Int      @default(0)
+  avgReviewTime  Decimal  @db.Decimal(10, 2)
+  approvalRate   Decimal  @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+  qcSpecialist   User     @relation(fields: [qcSpecialistId], references: [id])
+
+  @@unique([qcSpecialistId, year, month])
+  @@index([qcSpecialistId])
+  @@index([year, month])
+}
+
+model QCCategoryMetrics {
+  id             String   @id @default(cuid())
+  qcSpecialistId Int
+  category       String
+  reviewCount    Int      @default(0)
+  approvedCount  Int      @default(0)
+  rejectedCount  Int      @default(0)
+  approvalRate   Decimal  @db.Decimal(10, 2)
+  avgReviewTime  Decimal  @db.Decimal(10, 2)
+  period         String   @default("month")
+  startDate      DateTime
+  endDate        DateTime
+  updatedAt      DateTime @updatedAt
+  qcSpecialist   User     @relation(fields: [qcSpecialistId], references: [id])
+
+  @@unique([qcSpecialistId, category, period, startDate])
+  @@index([qcSpecialistId])
+  @@index([category])
+}
+
+model ShareableReview {
+  id           String    @id @default(cuid())
+  taskId       String
+  shareToken   String    @unique
+  createdBy    Int
+  expiresAt    DateTime?
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([shareToken])
+  @@index([createdBy])
+  @@index([expiresAt])
+}
+
+model ShareableFile {
+  id           String    @id @default(cuid())
+  s3Key        String
+  fileName     String
+  fileSize     BigInt?
+  mimeType     String?
+  shareToken   String    @unique
+  createdBy    Int
+  expiresAt    DateTime?
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([shareToken])
+  @@index([createdBy])
+}
+
+model ActivityReport {
+  id          String   @id @default(cuid())
+  fileName    String
+  fileUrl     String?
+  reportDate  DateTime
+  generatedAt DateTime @default(now())
+  metadata    Json?
+  status      String   @default("completed")
+
+  @@index([reportDate])
+  @@index([generatedAt])
+}
+
+model YouTubeChannel {
+  id              String             @id @default(cuid())
+  clientId        String             @unique
+  channelId       String             @unique
+  channelTitle    String?
+  channelAvatar   String?
+  accessToken     String
+  refreshToken    String
+  tokenExpiry     DateTime
+  scope           String?
+  subscriberCount Int                @default(0)
+  totalViews      BigInt             @default(0)
+  totalVideos     Int                @default(0)
+  lastSyncedAt    DateTime?
+  syncStatus      SyncStatus         @default(PENDING)
+  syncError       String?
+  isActive        Boolean            @default(true)
+  connectedAt     DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  client          Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  snapshots       YouTubeSnapshot[]
+  videoStats      YouTubeVideoStat[]
+
+  @@index([clientId])
+  @@index([channelId])
+  @@index([syncStatus])
+}
+
+model YouTubeSnapshot {
+  id                String         @id @default(cuid())
+  channelId         String
+  clientId          String
+  subscriberCount   Int            @default(0)
+  views             BigInt         @default(0)
+  watchTimeHours    Float          @default(0)
+  estimatedRevenue  Float?
+  likes             Int            @default(0)
+  comments          Int            @default(0)
+  shares            Int            @default(0)
+  impressions       BigInt         @default(0)
+  impressionsCtr    Float?
+  avgViewDuration   Float?
+  subscribersGained Int            @default(0)
+  subscribersLost   Int            @default(0)
+  geographyData     Json?
+  deviceData        Json?
+  periodStart       DateTime
+  periodEnd         DateTime
+  periodType        PeriodType     @default(DAILY)
+  snapshotDate      DateTime       @default(now())
+  dateRange         String         @default("28d")
+  channel           YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  client            Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, dateRange])
+  @@index([channelId])
+  @@index([clientId])
+  @@index([snapshotDate])
+  @@index([dateRange])
+}
+
+model YouTubeVideoStat {
+  id               String         @id @default(cuid())
+  channelId        String
+  videoId          String
+  title            String
+  publishedAt      DateTime
+  thumbnailUrl     String?
+  duration         Int?
+  views            BigInt         @default(0)
+  likes            Int            @default(0)
+  comments         Int            @default(0)
+  shares           Int            @default(0)
+  watchTimeHours   Float          @default(0)
+  avgViewDuration  Float?
+  estimatedRevenue Float?
+  lastUpdated      DateTime       @default(now())
+  channel          YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, videoId])
+  @@index([channelId])
+  @@index([videoId])
+  @@index([publishedAt])
+  @@index([views])
+}
+
+model RolePermission {
+  id              String   @id @default(cuid())
+  role            Role     @unique
+  navigationItems Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model MetaAccount {
+  id             String         @id @default(cuid())
+  clientId       String         @unique
+  instagramId    String?        @unique
+  facebookPageId String?
+  username       String?
+  profilePicture String?
+  accessToken    String
+  tokenExpiry    DateTime
+  followerCount  Int            @default(0)
+  followingCount Int            @default(0)
+  mediaCount     Int            @default(0)
+  lastSyncedAt   DateTime?
+  syncStatus     SyncStatus     @default(PENDING)
+  syncError      String?
+  isActive       Boolean        @default(true)
+  connectedAt    DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  client         Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  snapshots      MetaSnapshot[]
+
+  @@index([clientId])
+  @@index([instagramId])
+  @@index([syncStatus])
+}
+
+model MetaSnapshot {
+  id              String      @id @default(cuid())
+  metaAccountId   String
+  clientId        String
+  impressions     BigInt      @default(0)
+  reach           BigInt      @default(0)
+  profileViews    Int         @default(0)
+  websiteClicks   Int         @default(0)
+  followerCount   Int         @default(0)
+  followersGained Int         @default(0)
+  engagement      Int         @default(0)
+  topPosts        Json?
+  demographics    Json?
+  periodStart     DateTime
+  periodEnd       DateTime
+  dateRange       String      @default("28d")
+  snapshotDate    DateTime    @default(now())
+  client          Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  metaAccount     MetaAccount @relation(fields: [metaAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([metaAccountId, dateRange])
+  @@index([metaAccountId])
+  @@index([clientId])
+  @@index([snapshotDate])
+}
+
+model FacebookPage {
+  id              String             @id @default(cuid())
+  clientId        String
+  pageId          String
+  pageName        String
+  pageAccessToken String
+  category        String?
+  profilePicture  String?
+  followerCount   Int                @default(0)
+  likeCount       Int                @default(0)
+  isActive        Boolean            @default(true)
+  lastSyncAt      DateTime?
+  syncStatus      SyncStatus         @default(PENDING)
+  syncError       String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  client          Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  snapshots       FacebookSnapshot[]
+
+  @@unique([clientId, pageId])
+  @@index([clientId])
+  @@index([pageId])
+  @@index([syncStatus])
+}
+
+model FacebookSnapshot {
+  id              String       @id @default(cuid())
+  facebookPageId  String
+  clientId        String
+  date            DateTime     @db.Date
+  followers       Int          @default(0)
+  likes           Int          @default(0)
+  followersGained Int          @default(0)
+  impressions     Int          @default(0)
+  reach           Int          @default(0)
+  engagement      Int          @default(0)
+  views           Int          @default(0)
+  createdAt       DateTime     @default(now())
+  facebookPage    FacebookPage @relation(fields: [facebookPageId], references: [id], onDelete: Cascade)
+
+  @@unique([facebookPageId, date])
+  @@index([facebookPageId])
+  @@index([clientId])
+  @@index([date])
+}
+
+model ClientRevenue {
+  id          String   @id @default(cuid())
+  clientId    String
+  platform    String
+  amount      Decimal  @db.Decimal(12, 2)
+  currency    String   @default("INR")
+  period      DateTime
+  source      String
+  isAutomatic Boolean  @default(false)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, platform, period, source])
+  @@index([clientId])
+}
+
+model Job {
+  id             String    @id @default(cuid())
+  title          String
+  description    String
+  location       String?
+  startDate      DateTime
+  endDate        DateTime?
+  equipment      String?
+  camera         String?
+  quality        String?
+  frameRate      String?
+  lighting       String?
+  exclusions     String?
+  referenceLinks String[]
+  budget         Decimal?  @db.Decimal(10, 2)
+  status         JobStatus @default(OPEN)
+  createdById    Int
+  assignedToId   Int?
+  clientId       String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  bids           Bid[]
+  assignee       User?     @relation("JobAssignee", fields: [assignedToId], references: [id])
+  client         Client?   @relation(fields: [clientId], references: [id])
+  createdBy      User      @relation("JobCreator", fields: [createdById], references: [id])
+
+  @@index([status])
+  @@index([createdById])
+  @@index([assignedToId])
+  @@index([clientId])
+}
+
+model Bid {
+  id           String    @id @default(cuid())
+  amount       Decimal   @db.Decimal(10, 2)
+  note         String?
+  status       BidStatus @default(PENDING)
+  jobId        String
+  userId       Int
+  createdAt    DateTime  @default(now())
+  job          Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  videographer User      @relation(fields: [userId], references: [id])
+
+  @@unique([jobId, userId])
+  @@index([jobId])
+  @@index([userId])
+}
+
+model SlackConfig {
+  id          String   @id @default(cuid())
+  webhookUrl  String
+  channelName String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Guideline {
+  id        String   @id @default(cuid())
+  category  String
+  title     String
+  content   String
+  role      Role?
+  clientId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  client    Client?  @relation(fields: [clientId], references: [id])
+}
+
+model HelpVideo {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  youtubeUrl  String
+  order       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   User     @relation(fields: [createdById], references: [id])
+
+  @@index([isActive])
+  @@index([order])
+}
+
+model SalesLead {
+  id                  String               @id @default(cuid())
+  userId              Int
+  name                String               @default("")
+  email               String               @default("")
+  socials             String               @default("")
+  snapchatShow        String               @default("")
+  igDm                Boolean              @default(false)
+  meetingBooked       Boolean              @default(false)
+  emailed             Boolean              @default(false)
+  called              Boolean              @default(false)
+  texted              Boolean              @default(false)
+  notes               String               @default("")
+  emailTemplate       String               @default("")
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  calledAt            DateTime?
+  dmAt                DateTime?
+  dmPlatform          String               @default("")
+  emailedAt           DateTime?
+  meetingAt           DateTime?
+  textedAt            DateTime?
+  company             String               @default("")
+  phone               String               @default("")
+  source              String               @default("")
+  status              String               @default("NEW")
+  value               Float?
+  facebook            Boolean              @default(false)
+  instagram           Boolean              @default(false)
+  linkedin            Boolean              @default(false)
+  metadata            Json                 @default("{}")
+  priority            String               @default("")
+  tiktok              Boolean              @default(false)
+  twitter             Boolean              @default(false)
+  externalId          String?
+  externalSource      String?
+  externalUrl         String?
+  postUrl             String?              @db.VarChar(500)
+  profileUrl          String?              @db.VarChar(500)
+  convertedAt         DateTime?
+  convertedToClientId String?
+  commissions         AffiliateCommission?
+  user                User                 @relation(fields: [userId], references: [id])
+
+  @@unique([externalSource, externalId])
+  @@index([userId])
+  @@index([status])
+  @@index([externalSource, externalId])
+}
+
+model SalesLeadGenerationJob {
+  id              String    @id @default(cuid())
+  userId          Int
+  provider        String    @default("LINKEDIN")
+  status          String    @default("QUEUED")
+  externalJobId   String?   @unique
+  totalLeads      Int       @default(0)
+  importedLeads   Int       @default(0)
+  duplicateLeads  Int       @default(0)
+  requestedAt     DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  importedAt      DateTime?
+  errorMessage    String?
+  providerMessage String?
+  metadata        Json      @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([provider, userId])
+}
+
+model SalesActivityLog {
+  id        String   @id @default(cuid())
+  userId    Int
+  type      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type])
+}
+
+model SalesDashboardColumn {
+  id        String   @id @default(cuid())
+  userId    Int
+  name      String
+  label     String
+  type      String
+  width     String?  @default("w-[150px]")
+  order     Int      @default(0)
+  isVisible Boolean  @default(true)
+  isCustom  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model AffiliateCommission {
+  id             String                 @id @default(cuid())
+  salesUserId    Int
+  leadId         String                 @unique
+  clientName     String                 @default("")
+  dealValue      Decimal                @db.Decimal(12, 2)
+  commissionRate Decimal                @default(0.15) @db.Decimal(5, 4)
+  commissionAmt  Decimal                @db.Decimal(12, 2)
+  month          DateTime
+  status         String                 @default("PENDING")
+  paidAt         DateTime?
+  approvedAt     DateTime?
+  approvedBy     Int?
+  notes          String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  currency       String                 @default("usd")
+  holdUntil      DateTime?
+  payoutId       String?
+  lead           SalesLead              @relation(fields: [leadId], references: [id])
+  payout         CommissionPayout?      @relation(fields: [payoutId], references: [id])
+  user           User                   @relation(fields: [salesUserId], references: [id])
+  adjustments    CommissionAdjustment[]
+
+  @@index([salesUserId])
+  @@index([month])
+  @@index([status])
+  @@index([payoutId])
+}
+
+model SalesRepPayoutProfile {
+  id                     String    @id @default(cuid())
+  userId                 Int       @unique
+  stripeConnectAccountId String?   @unique
+  onboardingStatus       String    @default("NOT_STARTED")
+  payoutsEnabled         Boolean   @default(false)
+  taxFormType            String?
+  taxFormCollectedAt     DateTime?
+  country                String?
+  currency               String    @default("usd")
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  taxFormS3Key           String?
+  commissionRate         Decimal?  @db.Decimal(5, 4)
+  user                   User      @relation(fields: [userId], references: [id])
+
+  @@index([stripeConnectAccountId])
+}
+
+model CommissionAdjustment {
+  id             String              @id @default(cuid())
+  commissionId   String
+  editedById     Int
+  adjustmentType String
+  previousAmount Decimal             @db.Decimal(12, 2)
+  newAmount      Decimal             @db.Decimal(12, 2)
+  reason         String?
+  createdAt      DateTime            @default(now())
+  commission     AffiliateCommission @relation(fields: [commissionId], references: [id], onDelete: Cascade)
+  editedBy       User                @relation(fields: [editedById], references: [id])
+
+  @@index([commissionId])
+}
+
+model CommissionPayout {
+  id               String                @id @default(cuid())
+  batchId          String?
+  salesUserId      Int
+  stripeTransferId String?               @unique
+  amount           Decimal               @db.Decimal(12, 2)
+  currency         String                @default("usd")
+  status           String                @default("PENDING")
+  failureReason    String?
+  idempotencyKey   String                @unique
+  sentAt           DateTime?
+  paidAt           DateTime?
+  failedAt         DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  commissions      AffiliateCommission[]
+  batch            PayoutBatchRun?       @relation(fields: [batchId], references: [id])
+  user             User                  @relation(fields: [salesUserId], references: [id])
+
+  @@index([salesUserId])
+  @@index([status])
+  @@index([batchId])
+}
+
+model PayoutBatchRun {
+  id           String             @id @default(cuid())
+  runDate      DateTime           @default(now())
+  status       String             @default("RUNNING")
+  totalAmount  Decimal            @default(0) @db.Decimal(12, 2)
+  totalPayouts Int                @default(0)
+  createdAt    DateTime           @default(now())
+  completedAt  DateTime?
+  payouts      CommissionPayout[]
+}
+
+model PayoutConfig {
+  id                    String   @id @default(cuid())
+  minimumThresholdCents Int      @default(2500)
+  holdWindowDays        Int      @default(5)
+  updatedAt             DateTime @updatedAt
+  updatedById           Int?
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  tasks     Task[]   @relation("TagToTask")
+}
+
+model EditorClientPermission {
+  id       String @id @default(cuid())
+  editorId Int
+  clientId String
+  client   Client @relation("EditorClientPerms", fields: [clientId], references: [id], onDelete: Cascade)
+  editor   User   @relation("EditorPermissions", fields: [editorId], references: [id], onDelete: Cascade)
+
+  @@unique([editorId, clientId])
+  @@index([editorId])
+}
+
+model SalesManagerPermission {
+  id         String @id @default(cuid())
+  managerId  Int
+  salesRepId Int
+  manager    User   @relation("SalesManagerPermissions", fields: [managerId], references: [id], onDelete: Cascade)
+  salesRep   User   @relation("SalesRepPermissions", fields: [salesRepId], references: [id], onDelete: Cascade)
+
+  @@unique([managerId, salesRepId])
+  @@index([managerId])
+}
+
+model TrainingCourse {
+  id          String             @id @default(cuid())
+  title       String
+  description String             @default("")
+  role        Role
+  order       Int                @default(0)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  documents   TrainingDocument[]
+  videos      TrainingVideo[]
+
+  @@index([role])
+  @@index([role, order])
+}
+
+model TrainingDocument {
+  id          String          @id @default(cuid())
+  title       String
+  description String          @default("")
+  s3Key       String
+  fileName    String
+  fileSize    Int
+  role        Role
+  order       Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  courseId    String?
+  course      TrainingCourse? @relation(fields: [courseId], references: [id])
+
+  @@index([role])
+  @@index([role, order])
+  @@index([courseId, order])
+}
+
+model TrainingVideo {
+  id          String          @id @default(cuid())
+  title       String
+  description String          @default("")
+  videoUrl    String
+  role        Role
+  order       Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  courseId    String?
+  course      TrainingCourse? @relation(fields: [courseId], references: [id])
+
+  @@index([role])
+  @@index([role, order])
+  @@index([courseId, order])
+}
+
+model PortfolioLead {
+  id            String   @id @default(cuid())
+  firstName     String
+  lastName      String
+  phone         String
+  email         String
+  serviceNeeded String
+  ipAddress     String?
+  createdAt     DateTime @default(now())
+
+  @@index([email])
+  @@index([createdAt])
+}
+
+model PortfolioCategory {
+  id            String                 @id @default(cuid())
+  key           String                 @unique
+  label         String
+  iconName      String                 @default("Film")
+  order         Int                    @default(0)
+  isActive      Boolean                @default(true)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  subcategories PortfolioSubcategory[]
+}
+
+model PortfolioSubcategory {
+  id         String            @id @default(cuid())
+  categoryId String
+  key        String            @unique
+  label      String
+  iconName   String            @default("Video")
+  order      Int               @default(0)
+  isActive   Boolean           @default(true)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  category   PortfolioCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+}
+
+model PortfolioVideo {
+  id           String   @id @default(cuid())
+  title        String
+  description  String   @default("")
+  videoUrl     String
+  thumbnailUrl String?
+  category     String
+  order        Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([category])
+  @@index([category, order])
+  @@index([isActive])
+}
+
+model PortfolioImage {
+  id           String   @id @default(cuid())
+  title        String
+  description  String   @default("")
+  imageUrl     String
+  thumbnailUrl String?
+  category     String   @default("photography")
+  order        Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([category])
+  @@index([category, order])
+  @@index([isActive])
+}
+
+model PortfolioUiSetting {
+  id                String   @id
+  howItWorksVisible Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
+}
+
+model PortfolioJourneyClient {
+  id        String                 @id @default(cuid())
+  label     String
+  sublabel  String?
+  iconKey   String?
+  order     Int                    @default(0)
+  isActive  Boolean                @default(true)
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+  steps     PortfolioJourneyStep[]
+}
+
+model PortfolioJourneyStep {
+  id        String                 @id @default(cuid())
+  clientId  String
+  imageUrl  String
+  caption   String
+  order     Int                    @default(0)
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
+  client    PortfolioJourneyClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+}
+
+model Contract {
+  id                   String             @id @default(cuid())
+  title                String
+  description          String?
+  status               ContractStatus     @default(DRAFT)
+  s3Key                String
+  signedS3Key          String?
+  fileName             String
+  fileSize             BigInt
+  createdById          Int
+  clientId             String?
+  templateId           String?
+  expiresAt            DateTime?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  message              String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  annotations          Json?
+  allowVariableSigners Boolean            @default(false)
+  preClientId          String?
+  signwellDocumentId   String?
+  signwellRequestId    String?
+  requiresSignature    Boolean            @default(true)
+  createdBy            User               @relation("ContractCreator", fields: [createdById], references: [id])
+  template             ContractTemplate?  @relation(fields: [templateId], references: [id])
+  auditLogs            ContractAuditLog[]
+  signers              ContractSigner[]
+
+  @@index([status])
+  @@index([createdById])
+  @@index([clientId])
+  @@index([createdAt])
+}
+
+model ContractTemplate {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  s3Key       String
+  fileName    String
+  fileSize    BigInt
+  createdById Int
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  contracts   Contract[]
+
+  @@index([isActive])
+  @@index([createdById])
+}
+
+model ContractSigner {
+  id               String       @id @default(cuid())
+  contractId       String
+  name             String
+  email            String
+  role             String       @default("signer")
+  status           SignerStatus @default(PENDING)
+  signToken        String       @unique
+  signedAt         DateTime?
+  viewedAt         DateTime?
+  declinedAt       DateTime?
+  declineReason    String?
+  signatureS3Key   String?
+  signatureType    String?
+  order            Int          @default(0)
+  ipAddress        String?
+  userAgent        String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  isVariableSigner Boolean      @default(false)
+  smsVerified      Boolean      @default(false)
+  contract         Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([contractId])
+  @@index([signToken])
+  @@index([email])
+  @@index([status])
+}
+
+model ContractAuditLog {
+  id          String   @id @default(cuid())
+  contractId  String
+  action      String
+  performedBy String?
+  ipAddress   String?
+  userAgent   String?
+  details     String?
+  createdAt   DateTime @default(now())
+  contract    Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([contractId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model EmployeeDocument {
+  id           String   @id @default(cuid())
+  employeeId   Int
+  title        String
+  s3Key        String
+  fileName     String
+  fileSize     Int
+  uploadedById Int
+  createdAt    DateTime @default(now())
+  employee     User     @relation("EmployeeDocumentOwner", fields: [employeeId], references: [id], onDelete: Cascade)
+  uploadedBy   User     @relation("EmployeeDocumentUploader", fields: [uploadedById], references: [id])
+
+  @@index([employeeId])
+}
+
+model StripeWebhookEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model StripeCustomer {
+  id                   String          @id @default(cuid())
+  clientId             String          @unique
+  stripeCustomerId     String          @unique
+  defaultPaymentMethod String?
+  currency             String          @default("usd")
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  invoices             Invoice[]
+  paymentMethods       PaymentMethod[]
+  client               Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  subscriptions        Subscription[]
+
+  @@index([stripeCustomerId])
+}
+
+model PaymentMethod {
+  id                    String         @id @default(cuid())
+  stripeCustomerId      String
+  stripePaymentMethodId String         @unique
+  type                  String
+  isDefault             Boolean        @default(false)
+  cardBrand             String?
+  cardLast4             String?
+  cardExpMonth          Int?
+  cardExpYear           Int?
+  bankName              String?
+  bankLast4             String?
+  bankAccountType       String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  stripeCustomer        StripeCustomer @relation(fields: [stripeCustomerId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  stripeCustomerId     String
+  stripeSubscriptionId String             @unique
+  stripePriceId        String
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  canceledAt           DateTime?
+  amount               Int
+  currency             String             @default("usd")
+  interval             String             @default("month")
+  metadata             Json?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  stripeCustomer       StripeCustomer     @relation(fields: [stripeCustomerId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+  @@index([status])
+}
+
+model Invoice {
+  id                     String              @id @default(cuid())
+  stripeCustomerId       String
+  stripeInvoiceId        String?             @unique
+  invoiceNumber          String              @unique
+  status                 InvoiceStatus       @default(DRAFT)
+  amount                 Int
+  amountPaid             Int                 @default(0)
+  currency               String              @default("usd")
+  dueDate                DateTime?
+  paidAt                 DateTime?
+  description            String?
+  lineItems              Json
+  notes                  String?
+  isRecurring            Boolean             @default(false)
+  subscriptionId         String?
+  stripePaymentIntentId  String?
+  stripeHostedInvoiceUrl String?
+  stripePdfUrl           String?
+  metadata               Json?
+  createdBy              Int?
+  sentAt                 DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  ClientExpense          ClientExpense[]
+  creator                User?               @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  stripeCustomer         StripeCustomer      @relation(fields: [stripeCustomerId], references: [id], onDelete: Cascade)
+  oneOffDeliverables     OneOffDeliverable[]
+  payments               Payment[]
+  billedTasks            Task[]
+
+  @@index([stripeCustomerId])
+  @@index([status])
+  @@index([dueDate])
+  @@index([invoiceNumber])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  invoiceId             String
+  stripePaymentIntentId String?       @unique
+  stripeChargeId        String?
+  amount                Int
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  paymentMethod         String?
+  failureReason         String?
+  receiptUrl            String?
+  metadata              Json?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  invoice               Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([stripePaymentIntentId])
+  @@index([status])
+}
+
+model BillingPlan {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  stripePriceId   String   @unique
+  stripeProductId String
+  amount          Int
+  currency        String   @default("usd")
+  interval        String   @default("month")
+  isActive        Boolean  @default(true)
+  features        Json?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+model leads {
+  id               Int       @id @default(autoincrement())
+  name             String    @db.VarChar(200)
+  niche            String?   @db.VarChar(100)
+  status           String    @default("new") @db.VarChar(20)
+  notes            String?
+  contactedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  detectedNeed     String?   @db.VarChar(300)
+  matchedService   String?   @db.VarChar(200)
+  postText         String?
+  postUrl          String?   @db.VarChar(500)
+  profileUrl       String    @db.VarChar(500)
+  suggestedMessage String?
+
+  @@index([createdAt])
+  @@index([profileUrl])
+  @@index([status])
+}
+
+model PostedContent {
+  id              String   @id @default(cuid())
+  clientId        String
+  title           String?
+  platform        String
+  url             String
+  postedAt        DateTime
+  deliverableType String?
+  taskId          String?
+  createdAt       DateTime @default(now())
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@index([postedAt])
+  @@index([platform])
+  @@index([clientId, postedAt])
+}
+
+model PostingTarget {
+  id              String   @id @default(cuid())
+  clientId        String
+  platform        String
+  deliverableType String
+  count           Int
+  frequency       String   @default("daily")
+  extras          Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, platform, deliverableType])
+  @@index([clientId])
+}
+
+model EditorEodReport {
+  id           String                @id @default(cuid())
+  editorId     Int
+  reportDate   String
+  slackChannel String?
+  slackTs      String?
+  status       String                @default("DRAFT")
+  notes        String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  editor       User                  @relation(fields: [editorId], references: [id])
+  items        EditorEodReportItem[]
+
+  @@unique([editorId, reportDate])
+  @@index([editorId])
+  @@index([reportDate])
+}
+
+model EditorEodReportItem {
+  id           String          @id @default(cuid())
+  reportId     String
+  taskId       String
+  taskTitle    String
+  proofLinks   Json            @default("[]")
+  statusAtSend String?
+  createdAt    DateTime        @default(now())
+  report       EditorEodReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  task         Task            @relation(fields: [taskId], references: [id])
+
+  @@unique([reportId, taskId])
+  @@index([reportId])
+  @@index([taskId])
+}
+
+model NasSyncLog {
+  id           String   @id @default(cuid())
+  status       String
+  completedAt  DateTime
+  bucketName   String?
+  paths        Json     @default("[]")
+  filesCount   Int?
+  bytesCount   BigInt?
+  errorMessage String?
+  createdAt    DateTime @default(now())
+
+  @@index([completedAt])
+  @@index([status])
+}
+
+model ClientPortalAccess {
+  id                   String             @id @default(cuid())
+  clientId             String             @unique
+  status               PortalAccessStatus @default(ONBOARDING)
+  billingAnchorDate    DateTime?
+  nextBillingDate      DateTime?
+  arrearsPolicy        String             @default("current_only")
+  adminUnlockedById    Int?
+  adminUnlockedAt      DateTime?
+  lockedAt             DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  autoInvoiceActive    Boolean            @default(false)
+  dueDays              Int                @default(15)
+  recurringAmount      Int?
+  recurringDescription String?
+  User                 User?              @relation(fields: [adminUnlockedById], references: [id])
+  Client               Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([nextBillingDate])
+  @@index([status])
+  @@index([autoInvoiceActive])
+}
+
+model OnboardingToken {
+  id        String    @id @default(cuid())
+  clientId  String    @unique
+  token     String    @unique @default(cuid())
+  used      Boolean   @default(false)
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  client    Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+}
+
+model MeetingNote {
+  id          String    @id @default(cuid())
+  clientId    String
+  driveDocId  String
+  driveDocUrl String
+  title       String
+  meetingDate DateTime
+  status      String    @default("draft")
+  sentAt      DateTime?
+  sentBy      String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  client      Client    @relation(fields: [clientId], references: [id])
+
+  @@index([clientId])
+}
+
+model HiringCandidate {
+  id              String                @id @default(cuid())
+  name            String
+  email           String
+  phone           String?
+  portfolioUrl    String?
+  resumeUrl       String?
+  source          String?
+  notes           String?
+  status          HiringCandidateStatus @default(NEW)
+  createdById     Int?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  convertedAt     DateTime?
+  convertedUserId Int?                  @unique
+  convertedUser   User?                 @relation("ConvertedCandidateUser", fields: [convertedUserId], references: [id])
+  createdBy       User?                 @relation(fields: [createdById], references: [id])
+  testTasks       HiringTestTask[]
+
+  @@index([status])
+  @@index([email])
+}
+
+model HiringTestTask {
+  id              String               @id @default(cuid())
+  candidateId     String
+  title           String
+  instructions    String
+  rawFootageUrl   String?
+  submissionToken String               @unique @default(cuid())
+  status          HiringTestTaskStatus @default(PENDING)
+  submissionUrl   String?
+  submissionS3Key String?
+  sentAt          DateTime?
+  submittedAt     DateTime?
+  reviewedById    Int?
+  reviewNotes     String?
+  reviewedAt      DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  candidate       HiringCandidate      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  reviewedBy      User?                @relation(fields: [reviewedById], references: [id])
+
+  @@index([candidateId])
+  @@index([status])
+}
+
+model PreClient {
+  id          String          @id @default(cuid())
+  name        String
+  email       String
+  phone       String?
+  companyName String?
+  status      PreClientStatus @default(QUALIFIED)
+  createdById Int
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  address     String?
+  createdBy   User            @relation(fields: [createdById], references: [id])
+  quotes      Quote[]
+
+  @@index([createdById])
+  @@index([status])
+}
+
+model Quote {
+  id              String      @id @default(cuid())
+  preClientId     String
+  version         Int         @default(1)
+  status          QuoteStatus @default(DRAFT)
+  services        Json
+  totalAmount     Int
+  notes           String?
+  validDays       Int         @default(30)
+  shareToken      String      @unique @default(cuid())
+  sentAt          DateTime?
+  viewedAt        DateTime?
+  acceptedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  changeRequest   String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  acceptanceText  String?
+  inclusions      Json        @default("[]")
+  preparedBy      String?
+  terms           Json        @default("[]")
+  preClient       PreClient   @relation(fields: [preClientId], references: [id], onDelete: Cascade)
+
+  @@index([preClientId])
+  @@index([shareToken])
+  @@index([status])
+}
+
+model NasMirrorJob {
+  id            String    @id @default(cuid())
+  clientName    String
+  monthFolder   String
+  status        String    @default("pending")
+  scannedCount  Int       @default(0)
+  copiedCount   Int       @default(0)
+  verifiedCount Int       @default(0)
+  deletedCount  Int       @default(0)
+  failedCount   Int       @default(0)
+  currentFile   String?
+  errorMessage  String?
+  triggeredById Int?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  folderPath    String?
+  folderType    String    @default("outputs")
+  TriggeredBy   User?     @relation(fields: [triggeredById], references: [id])
+
+  @@index([status])
+  @@index([clientName, monthFolder])
+  @@index([createdAt])
+}
+
+model ClientExpense {
+  id              String              @id
+  tripId          String
+  description     String
+  amount          Int
+  expenseDate     DateTime
+  receiptS3Key    String
+  receiptUrl      String
+  receiptFileName String
+  status          ClientExpenseStatus @default(PENDING)
+  invoiceId       String?
+  createdById     Int
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime
+  User            User                @relation(fields: [createdById], references: [id])
+  Invoice         Invoice?            @relation(fields: [invoiceId], references: [id])
+  ExpenseTrip     ExpenseTrip         @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([tripId])
+}
+
+model DriveNote {
+  id          String   @id
+  clientId    String
+  s3Key       String
+  isFolder    Boolean  @default(false)
+  content     String
+  createdById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+  Client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  User        User     @relation(fields: [createdById], references: [id])
+
+  @@index([clientId, s3Key])
+}
+
+model Equipment {
+  id          String   @id
+  name        String
+  category    String?
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+  User        User?    @relation(fields: [createdById], references: [id])
+}
+
+model ExpenseTrip {
+  id            String          @id
+  clientId      String
+  name          String
+  createdById   Int
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
+  ClientExpense ClientExpense[]
+  Client        Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  User          User            @relation(fields: [createdById], references: [id])
+
+  @@index([clientId])
+}
+
+model NasBackupRecord {
+  id                 String    @id
+  clientId           String
+  folderType         String
+  s3Key              String    @unique
+  fileName           String
+  fileSize           BigInt?
+  archivedToNas      Boolean   @default(false)
+  nasArchivedAt      DateTime?
+  nasPath            String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime
+  deletedFromCloud   Boolean   @default(false)
+  deletedFromCloudAt DateTime?
+
+  @@index([clientId])
+}
+
+model PortfolioChannel {
+  id            String   @id
+  name          String
+  channelUrl    String
+  avatarUrl     String?
+  followerCount String   @default("")
+  category      String
+  order         Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime
+
+  @@index([category])
+  @@index([category, order])
+  @@index([isActive])
+}
+
+model ShareRecipient {
+  id             String    @id
+  shareId        String
+  email          String
+  status         String    @default("invited")
+  otpCode        String?
+  otpExpiresAt   DateTime?
+  lastAccessedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime
+
+  @@unique([shareId, email])
+  @@index([shareId])
+}
+
+model FileDeletionRequest {
+  id          String                    @id @default(cuid())
+  fileId      String
+  taskId      String
+  requestedBy Int
+  reason      String?
+  status      FileDeletionRequestStatus @default(PENDING)
+  reviewedBy  Int?
+  reviewedAt  DateTime?
+  batchId     String?
+  createdAt   DateTime                  @default(now())
+
+  @@index([taskId])
+  @@index([fileId])
+  @@index([status])
+  @@index([batchId])
+  @@index([requestedBy])
+}
+
+enum FileDeletionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+
+enum HiringCandidateStatus {
+  NEW
+  CONTACTED
+  TEST_SENT
+  TEST_SUBMITTED
+  IN_REVIEW
+  HIRED
+  REJECTED
+}
+
+enum HiringTestTaskStatus {
+  PENDING
+  SENT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  TRIALING
+  PAUSED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING
+  SENT
+  PAID
+  PARTIALLY_PAID
+  OVERDUE
+  CANCELED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  REFUNDED
+}
+
+enum Role {
+  admin
+  manager
+  editor
+  videographer
+  scheduler
+  client
+  qc
+  sales
+  sales_manager
+  host
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PayrollStatus {
+  PENDING
+  PAID
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  READY_FOR_QC
+  QC_IN_PROGRESS
+  COMPLETED
+  SCHEDULED
+  ON_HOLD
+  REJECTED_BY_QC
+  REJECTED_BY_CLIENT
+  CLIENT_REVIEW
+  VIDEOGRAPHER_ASSIGNED
+  POSTED
+  HIDDEN
+}
+
+enum FeedbackCategory {
+  GENERAL
+  TECHNICAL
+  WORKFLOW
+  SUGGESTION
+  BUG_REPORT
+}
+
+enum FeedbackPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum FeedbackStatus {
+  PENDING
+  ACKNOWLEDGED
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCING
+  COMPLETED
+  FAILED
+}
+
+enum PeriodType {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum JobStatus {
+  OPEN
+  ASSIGNED
+  COMPLETED
+  CANCELLED
+}
+
+enum BidStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum ContractStatus {
+  DRAFT
+  SENT
+  PARTIALLY_SIGNED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum SignerStatus {
+  PENDING
+  VIEWED
+  SIGNED
+  DECLINED
+}
+
+enum PortalAccessStatus {
+  ONBOARDING
+  CONTRACT_PENDING
+  PAYMENT_PENDING
+  ACTIVE
+  LOCKED
+  ADMIN_UNLOCKED
+}
+
+enum PreClientStatus {
+  QUALIFIED
+  QUOTED
+  QUOTE_ACCEPTED
+  PROVISIONING
+  CONVERTED
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+}
+
+enum ClientExpenseStatus {
+  PENDING
+  INVOICED
+  PAID
+}
+
+enum RawFootageFolderCode {
+  SF
+  LF
+}
+
+model RawFootageFolder {
+  id                 String                @id @default(cuid())
+  clientId           String
+  monthFolder        String
+  code               RawFootageFolderCode
+  number             Int
+  folderPath         String
+  taskId             String?
+  createdAt          DateTime              @default(now())
+  client             Client                @relation(fields: [clientId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  task               Task?                 @relation(fields: [taskId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  deliverableScript  DeliverableScript?
+
+  @@unique([clientId, monthFolder, code, number])
+  @@index([taskId])
+}
+
+model DeliverableScript {
+  id                  String               @id @default(cuid())
+  clientId            String
+  monthFolder         String
+  code                RawFootageFolderCode
+  number              Int
+  rawFootageFolderId  String               @unique
+  taskId              String?
+  title               String
+  content             String               @default("")
+  template            String               @default("overall")
+  status              String               @default("draft")
+  versions            Json                 @default("[]")
+  clientFeedback      String?
+  reviewTaskId        String?
+  completedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  client              Client               @relation(fields: [clientId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  rawFootageFolder    RawFootageFolder     @relation(fields: [rawFootageFolderId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  task                Task?                @relation(fields: [taskId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([clientId, monthFolder, code, number])
+  @@index([taskId])
+}
+
+model ScriptShootLink {
+  id                 String   @id @default(cuid())
+  sourceShootTaskId  String
+  scriptId           String
+  targetShootTaskId  String
+  createdAt          DateTime @default(now())
+
+  @@unique([scriptId, targetShootTaskId])
+  @@index([targetShootTaskId])
+}
+
+model UserInvite {
+  id             String    @id @default(cuid())
+  email          String
+  name           String?
+  role           Role
+  tokenHash      String    @unique
+  status         String    @default("PENDING")
+  invitedById    Int
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  acceptedUserId Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  invitedBy      User      @relation("UserInviteInviter", fields: [invitedById], references: [id])
+
+  @@index([email])
+  @@index([status])
+}
+
+model DevTicket {
+  id          String                @id @default(cuid())
+  title       String
+  description String?
+  type        String                @default("BUG")
+  source      String                @default("INTERNAL")
+  clientId    String?
+  clientName  String?
+  priority    String                @default("UNSET")
+  status      String                @default("OPEN")
+  loomUrl     String?
+  reporterId  Int
+  assigneeId  Int?
+  resolvedAt  DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  reporter    User                  @relation("DevTicketReporter", fields: [reporterId], references: [id])
+  assignee    User?                 @relation("DevTicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  attachments DevTicketAttachment[]
+  comments    DevTicketComment[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([assigneeId])
+  @@index([createdAt(sort: Desc)])
+}
+
+model DevTicketAttachment {
+  id           String    @id @default(cuid())
+  ticketId     String
+  r2Key        String
+  fileName     String
+  mimeType     String?
+  size         Int?
+  uploadedById Int
+  createdAt    DateTime  @default(now())
+  ticket       DevTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  uploadedBy   User      @relation("DevTicketAttachmentUploader", fields: [uploadedById], references: [id])
+
+  @@index([ticketId])
+}
+
+model DevTicketComment {
+  id        String    @id @default(cuid())
+  ticketId  String
+  authorId  Int
+  message   String
+  createdAt DateTime  @default(now())
+  ticket    DevTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author    User      @relation("DevTicketCommentAuthor", fields: [authorId], references: [id])
+
+  @@index([ticketId])
+}
+
+model Announcement {
+  id              String    @id @default(cuid())
+  title           String
+  body            String
+  type            String    @default("NEW_FEATURE")
+  linkUrl         String?
+  linkLabel       String?
+  audienceAll     Boolean   @default(false)
+  audienceRoles   String[]  @default([])
+  audienceUserIds Int[]     @default([])
+  sendEmail       Boolean   @default(false)
+  sendSlack       Boolean   @default(false)
+  slackChannels   String[]  @default([])
+  showPopup       Boolean   @default(false)
+  status          String    @default("DRAFT")
+  publishAt       DateTime?
+  publishedAt     DateTime?
+  expiresAt       DateTime?
+  recipientCount  Int       @default(0)
+  emailSentCount  Int       @default(0)
+  createdById     Int
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  createdBy       User      @relation("AnnouncementCreator", fields: [createdById], references: [id])
+  reads           AnnouncementRead[]
+
+  @@index([status, publishAt])
+  @@index([publishedAt])
+}
+
+model AnnouncementRead {
+  id             String       @id @default(cuid())
+  announcementId String
+  userId         Int
+  readAt         DateTime     @default(now())
+  dismissedAt    DateTime?
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user           User         @relation("AnnouncementReads", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, userId])
+  @@index([userId])
+}
+
+// Three-strike discipline. A person's strike count is the number of rows with
+// revokedAt = null; the 3rd active strike terminates the account
+// (User.employeeStatus = TERMINATED). Rules live in src/lib/strikes.ts.
+model Strike {
+  id                   String    @id @default(cuid())
+  recipientId          Int
+  senderId             Int
+  reason               String
+  createdAt            DateTime  @default(now())
+  // true on the strike that took the recipient to 3 and terminated them
+  triggeredTermination Boolean   @default(false)
+  revokedAt            DateTime?
+  revokedById          Int?
+  revokeReason         String?
+  recipient            User      @relation("StrikeRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  sender               User      @relation("StrikeSender", fields: [senderId], references: [id], onDelete: Restrict)
+  revokedBy            User?     @relation("StrikeRevoker", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([recipientId, revokedAt])
+  @@index([senderId])
+}

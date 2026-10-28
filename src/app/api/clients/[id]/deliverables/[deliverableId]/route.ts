@@ -1,0 +1,128 @@
+export const dynamic = 'force-dynamic';
+// app/api/clients/[clientId]/deliverables/[deliverableId]/route.ts
+import { getDbHttp } from "@/lib/db";
+import { monthlyDeliverable, recurringTask } from "@/lib/db/schema";
+import { and, eq } from "drizzle-orm";
+import { NextResponse } from "next/server";
+import { syncPostingTargetsForClient } from "@/lib/posting-target-sync";
+
+// GET - Get a single deliverable
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ id: string; deliverableId: string }> }
+) {
+  const db = getDbHttp();
+  try {
+    const { id: clientId, deliverableId } = await params;
+
+    const [deliverable] = await db.select().from(monthlyDeliverable)
+      .where(and(eq(monthlyDeliverable.id, deliverableId), eq(monthlyDeliverable.clientId, clientId)))
+      .limit(1);
+
+    if (!deliverable) {
+      return NextResponse.json({ message: "Deliverable not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ deliverable });
+
+  } catch (err) {
+    console.error("GET deliverable failed:", err);
+    return NextResponse.json({ message: "Server error" }, { status: 500 });
+  }
+}
+
+// PUT - Update a deliverable
+export async function PUT(
+  req: Request,
+  { params }: { params: Promise<{ id: string; deliverableId: string }> }
+) {
+  const db = getDbHttp();
+  try {
+    const { id: clientId, deliverableId } = await params;
+    const data = await req.json();
+
+    console.log("✏️ Updating deliverable:", deliverableId);
+    console.log("📦 Update data:", data);
+
+    // Verify deliverable exists and belongs to this client
+    const [existing] = await db.select().from(monthlyDeliverable)
+      .where(and(eq(monthlyDeliverable.id, deliverableId), eq(monthlyDeliverable.clientId, clientId)))
+      .limit(1);
+
+    if (!existing) {
+      return NextResponse.json({ message: "Deliverable not found" }, { status: 404 });
+    }
+
+    const [deliverable] = await db.update(monthlyDeliverable).set({
+      type: data.type,
+      quantity: data.quantity || 1,
+      videosPerDay: data.videosPerDay || 1,
+      postingSchedule: data.postingSchedule || "weekly",
+      postingDays: data.postingDays || [],
+      postingTimes: data.postingTimes || ["10:00 AM"],
+      platforms: data.platforms || [],
+      description: data.description || "",
+      isTrial: data.isTrial ?? false,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(monthlyDeliverable.id, deliverableId)).returning();
+
+    console.log("✅ Deliverable updated:", deliverable.id);
+
+    await syncPostingTargetsForClient(clientId);
+
+    return NextResponse.json({
+      success: true,
+      deliverable
+    });
+
+  } catch (err) {
+    console.error("PUT deliverable failed:", err);
+    return NextResponse.json({ message: "Server error" }, { status: 500 });
+  }
+}
+
+// DELETE - Delete a deliverable
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string; deliverableId: string }> }
+) {
+  const db = getDbHttp();
+  try {
+    const { id: clientId, deliverableId } = await params;
+
+    console.log("🗑️ Deleting deliverable:", deliverableId);
+
+    // Verify deliverable exists and belongs to this client
+    const [existing] = await db.select().from(monthlyDeliverable)
+      .where(and(eq(monthlyDeliverable.id, deliverableId), eq(monthlyDeliverable.clientId, clientId)))
+      .limit(1);
+
+    if (!existing) {
+      return NextResponse.json(
+        { message: "Deliverable not found" },
+        { status: 404 },
+      );
+    }
+
+    // Deactivate related recurring tasks (don't delete for data safety)
+    // await db.update(recurringTask).set({ active: false }).where(eq(recurringTask.deliverableId, deliverableId));
+
+    // Delete related recurring tasks first
+    await db.delete(recurringTask).where(eq(recurringTask.deliverableId, deliverableId));
+
+    // Delete the deliverable
+    await db.delete(monthlyDeliverable).where(eq(monthlyDeliverable.id, deliverableId));
+
+    console.log("✅ Deliverable deleted:", deliverableId);
+
+    await syncPostingTargetsForClient(clientId);
+
+    return NextResponse.json({
+      success: true,
+      message: "Deliverable deleted successfully",
+    });
+  } catch (err) {
+    console.error("DELETE deliverable failed:", err);
+    return NextResponse.json({ message: "Server error" }, { status: 500 });
+  }
+}

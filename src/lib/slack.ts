@@ -1,0 +1,824 @@
+// src/lib/slack.ts
+import { WebClient } from "@slack/web-api";
+import { getDbHttp } from "@/lib/db";
+import {
+  user as userTable,
+  client as clientTable,
+  slackConfig as slackConfigTable,
+  task as taskTable,
+} from "@/lib/db/schema";
+import { and, eq, inArray } from "drizzle-orm";
+import { enqueueNotification } from "@/lib/notification-queue";
+
+// ---------------------------------------------------------------------------
+// Lazy-initialised Slack WebClient (for bot DMs)
+// ---------------------------------------------------------------------------
+let _slackClient: WebClient | null = null;
+
+function getSlackClient(): WebClient | null {
+  if (!process.env.SLACK_BOT_TOKEN) return null;
+  if (!_slackClient) {
+    _slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+  }
+  return _slackClient;
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+export interface SlackNotification {
+  type: string;
+  title?: string;
+  body?: string | null;
+  message?: string | null; // Raw mrkdwn text when exact formatting matters
+  payload?: Record<string, any> | null;
+  userId?: number | null;
+  mentionUserIds?: number[]; // User IDs to @mention in the message
+}
+
+export type SlackChannel =
+  | "qc"
+  | "scheduling"
+  | "reports"
+  | "e8app"
+  | "attendance"
+  | "editors"
+  | "tdbs_guests"
+  | "sales"
+  | "ops"
+  | "e8app_dev";
+
+// Slack member ID of admin Eric — @mentioned on QC-ready and leave-request posts.
+export const ERIC_SLACK_USER_ID = "U0BU5CES8CX";
+
+// ---------------------------------------------------------------------------
+// Channel Configuration (from environment variables)
+// ---------------------------------------------------------------------------
+function parseWebhookList(value?: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getWebhookGroup(...envKeys: string[]): string[] {
+  const urls = envKeys.flatMap((key) => parseWebhookList(process.env[key]));
+  return [...new Set(urls)];
+}
+
+const CHANNEL_CONFIG: Record<SlackChannel, () => string[]> = {
+  // QC/Quality Control channel
+  qc: () => getWebhookGroup("SLACK_QC_CHANNEL_WEBHOOK_URL"),
+  // Scheduling channel
+  scheduling: () => getWebhookGroup("SLACK_SCHEDULING_CHANNEL_WEBHOOK_URL"),
+  // Reports channel (for daily summary)
+  reports: () => getWebhookGroup("SLACK_REPORT_WEBHOOK_URL"),
+  // E8 App channel (for internal team notifications)
+  e8app: () => getWebhookGroup("SLACK_E8_APP_CHANNEL_WEBHOOK_URL"),
+  // Attendance reminder channels
+  attendance: () =>
+    getWebhookGroup(
+      "SLACK_ATTENDANCE_CHANNEL_WEBHOOK_URLS",
+      "SLACK_ATTENDANCE_CHANNEL_WEBHOOK_URL",
+      "SLACK_ATTENDANCE_WEBHOOK_URLS",
+      "SLACK_ATTENDANCE_WEBHOOK_URL",
+    ),
+  // Editor reminder channels
+  editors: () =>
+    getWebhookGroup(
+      "SLACK_EDITORS_CHANNEL_WEBHOOK_URLS",
+      "SLACK_EDITORS_CHANNEL_WEBHOOK_URL",
+      "SLACK_EDITOR_CHANNEL_WEBHOOK_URLS",
+      "SLACK_EDITOR_CHANNEL_WEBHOOK_URL",
+      "SLACK_EDITORS_WEBHOOK_URLS",
+      "SLACK_EDITORS_WEBHOOK_URL",
+      "SLACK_EDITOR_WEBHOOK_URLS",
+      "SLACK_EDITOR_WEBHOOK_URL",
+    ),
+  // TDBS Guests channel
+  tdbs_guests: () =>
+    getWebhookGroup("SLACK_TDBS_GUESTS_CHANNEL_WEBHOOK_URL"),
+  // Sales channel (portfolio gate-form leads, etc.)
+  sales: () => getWebhookGroup("SLACK_SALES_CHANNEL_WEBHOOK_URL"),
+  // Ops channel (daily summary webhook; also leave requests)
+  ops: () => getWebhookGroup("SLACKS_OPS_CHANNEL", "SLACK_OPS_CHANNEL_WEBHOOK_URL"),
+  // #e8app-dev — new Dev Portal tickets
+  e8app_dev: () => getWebhookGroup("SLACK_E8APP_DEV_CHANNEL_WEBHOOK_URL"),
+};
+
+// ---------------------------------------------------------------------------
+// Notification-type → emoji mapping for Slack messages
+// ---------------------------------------------------------------------------
+const TYPE_EMOJI: Record<string, string> = {
+  task_rejected: "❌",
+  qc_ready: "🔍",
+  task_scheduled: "📅",
+  file_uploaded: "📤",
+  client_general_comment: "💬",
+};
+
+function emojiForType(type: string): string {
+  return TYPE_EMOJI[type] || "🔔";
+}
+
+// ---------------------------------------------------------------------------
+// Helper — Get Slack user mentions from user IDs
+// ---------------------------------------------------------------------------
+async function getSlackMentions(userIds: number[]): Promise<string> {
+  const db = getDbHttp();
+  if (!userIds || userIds.length === 0) return "";
+
+  const users = await db
+    .select({ id: userTable.id, name: userTable.name, slackUserId: userTable.slackUserId })
+    .from(userTable)
+    .where(inArray(userTable.id, userIds));
+
+  const mentions = users
+    .map((u) => {
+      if (u.slackUserId) {
+        return `<@${u.slackUserId}>`; // Slack mention format
+      }
+      return u.name || `User #${u.id}`; // Fallback to name
+    })
+    .join(" ");
+
+  return mentions;
+}
+
+// ---------------------------------------------------------------------------
+// Helper — build Block Kit blocks for a notification
+// ---------------------------------------------------------------------------
+async function buildSlackBlocks(notification: SlackNotification): Promise<any[]> {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const emoji = emojiForType(notification.type);
+
+  // Build mention string if needed
+  let mentionPrefix = "";
+  if (notification.mentionUserIds && notification.mentionUserIds.length > 0) {
+    mentionPrefix = await getSlackMentions(notification.mentionUserIds);
+    if (mentionPrefix) mentionPrefix += " ";
+  }
+
+  const baseText = notification.message
+    ? `${mentionPrefix}${notification.message}`
+    : `${mentionPrefix}${emoji} *${notification.title || "Notification"}*${notification.body ? `\n${notification.body}` : ""}`;
+
+  const blocks: any[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: baseText,
+      },
+    },
+  ];
+
+  if (notification.payload?.taskId) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `<${appUrl}/dashboard?task=${notification.payload.taskId}|View Task in Dashboard>`,
+        },
+      ],
+    });
+  }
+
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// 1. WEBHOOK — Post to a webhook URL
+//    If overrideUrl is provided, posts there instead of the global webhook.
+// ---------------------------------------------------------------------------
+export async function sendSlackWebhook(
+  notification: SlackNotification,
+  overrideUrl?: string
+): Promise<boolean> {
+  const db = getDbHttp();
+  try {
+    let webhookUrl = overrideUrl;
+
+    // If no override, use global config (DB → env fallback)
+    if (!webhookUrl) {
+      const [config] = await db
+        .select()
+        .from(slackConfigTable)
+        .where(eq(slackConfigTable.isActive, true))
+        .limit(1);
+      webhookUrl = config?.webhookUrl || process.env.SLACK_WEBHOOK_URL;
+    }
+
+    if (!webhookUrl) {
+      console.log(`[Slack Webhook] Skipped — no webhook URL configured (override=${!!overrideUrl})`);
+      return false;
+    }
+
+    const blocks = await buildSlackBlocks(notification);
+
+    // Queued, not delivered synchronously — this now means "accepted for
+    // delivery", not "confirmed delivered". The Worker's queue() consumer
+    // (worker.ts) does the real fetch() and handles retries/DLQ.
+    const queued = await enqueueNotification({ kind: "slack-webhook", url: webhookUrl, blocks });
+
+    if (!queued) {
+      console.error(`[Slack Webhook] Failed to queue notification (url=${webhookUrl.substring(0, 60)}...)`);
+      return false;
+    }
+    console.log(
+      `[Slack Webhook] ✅ Queued notification: "${notification.title || notification.message || notification.type}" (type=${notification.type})`,
+    );
+    return true;
+  } catch (err) {
+    console.error("[Slack Webhook] Failed:", err);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. CLIENT WEBHOOK — Post to a client-specific channel
+// ---------------------------------------------------------------------------
+export async function sendClientSlackWebhook(
+  clientId: string,
+  notification: SlackNotification
+): Promise<boolean> {
+  const db = getDbHttp();
+  try {
+    const [client] = await db
+      .select({ slackWebhookUrl: clientTable.slackWebhookUrl, slackEnabled: clientTable.slackEnabled, name: clientTable.name })
+      .from(clientTable)
+      .where(eq(clientTable.id, clientId))
+      .limit(1);
+
+    if (!client) {
+      console.log(`[Slack Client] Client ${clientId} not found in DB`);
+      return false;
+    }
+
+    if (!client.slackEnabled) {
+      console.log(`[Slack Client] Slack disabled for client "${client.name}" (slackEnabled=false)`);
+      return false;
+    }
+
+    if (!client.slackWebhookUrl) {
+      console.log(`[Slack Client] No webhook URL for client "${client.name}" (slackEnabled=true but no URL)`);
+      return false;
+    }
+
+    console.log(`[Slack Client] Sending to client "${client.name}" channel...`);
+    return sendSlackWebhook(notification, client.slackWebhookUrl);
+  } catch (err) {
+    console.error("[Slack Client Webhook] Failed:", err);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2b. CHANNEL-SPECIFIC WEBHOOK — Post to QC, Scheduling, E8 App, etc.
+// ---------------------------------------------------------------------------
+export interface SlackChannelSendResult {
+  channel: SlackChannel;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  missing: boolean;
+}
+
+export async function sendToChannel(
+  channel: SlackChannel,
+  notification: SlackNotification
+): Promise<SlackChannelSendResult> {
+  const webhookUrls = CHANNEL_CONFIG[channel]();
+  if (webhookUrls.length === 0) {
+    console.log(`[Slack ${channel}] No webhook URL configured for ${channel} channel`);
+    return {
+      channel,
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      missing: true,
+    };
+  }
+
+  console.log(
+    `[Slack ${channel}] Sending notification to ${channel} group (${webhookUrls.length} webhook${webhookUrls.length === 1 ? "" : "s"})...`,
+  );
+
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const webhookUrl of webhookUrls) {
+    const ok = await sendSlackWebhook(notification, webhookUrl);
+    if (ok) {
+      succeeded++;
+    } else {
+      failed++;
+    }
+  }
+
+  return {
+    channel,
+    attempted: webhookUrls.length,
+    succeeded,
+    failed,
+    missing: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 3. BOT DM — Send a direct message to a specific user
+// ---------------------------------------------------------------------------
+export async function sendSlackDM(
+  slackUserId: string,
+  notification: SlackNotification
+): Promise<void> {
+  try {
+    const client = getSlackClient();
+    if (!client) return; // Bot not configured
+
+    const conversationResult = await client.conversations.open({
+      users: slackUserId,
+    });
+
+    if (!conversationResult.ok || !conversationResult.channel?.id) {
+      console.error("[Slack DM] Failed to open conversation with", slackUserId);
+      return;
+    }
+
+    const channelId = conversationResult.channel.id;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const emoji = emojiForType(notification.type);
+
+    let text = notification.message || `${emoji} *${notification.title || "Notification"}*`;
+    if (!notification.message && notification.body) text += `\n${notification.body}`;
+    if (notification.payload?.taskId) {
+      text += `\n<${appUrl}/dashboard?task=${notification.payload.taskId}|View Task>`;
+    }
+
+    // Queued rather than sent synchronously — conversations.open() above
+    // still runs inline (plain HTTPS, fine on Workers); only the actual
+    // message send goes through the queue for retry/DLQ coverage.
+    await enqueueNotification({ kind: "slack-dm", channelId, text });
+  } catch (err) {
+    console.error("[Slack DM] Failed:", err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. High-level dispatcher — called from notifyUser()
+// ---------------------------------------------------------------------------
+export async function deliverSlackNotification(
+  notification: SlackNotification,
+): Promise<void> {
+  const db = getDbHttp();
+  console.log(
+    `[Slack Dispatch] Delivering notification: type=${notification.type}, title="${notification.title || notification.message || notification.type}", clientId=${notification.payload?.clientId || "none"}, userId=${notification.userId || "none"}`,
+  );
+
+  const notificationType = notification.type;
+
+  // =========================================================================
+  // ROUTING RULES
+  // =========================================================================
+
+  // 1. QC_READY → QC Channel ONLY (with @mention of admin Eric)
+  if (notificationType === "qc_ready") {
+    console.log(`[Slack Dispatch] Ready for Quality Control → QC channel only`);
+
+    // Hardcoded QC admin's Slack ID
+    const adminMention = `<@${ERIC_SLACK_USER_ID}> `;
+    const taskTitle = notification.payload?.taskTitle || notification.title || "Task";
+
+    // Create modified notification with admin mention
+    const mentionedNotification = {
+      ...notification,
+      title: `👀 ${adminMention}Content Ready for Quality Control`,
+      body: `Content "${taskTitle}" is ready for review.`,
+    };
+
+    // Send to QC channel ONLY
+    await sendToChannel("qc", mentionedNotification);
+    return;
+  }
+
+  // 2. TASK_REJECTED → Client channel ONLY (with @mention of editor + revision comments)
+  if (notificationType === "task_rejected") {
+    console.log(`[Slack Dispatch] Task Rejected → Client channel only`);
+
+    // Only send if there's a clientId
+    if (!notification.payload?.clientId) {
+      console.log(`[Slack Dispatch] No clientId provided, skipping task_rejected notification`);
+      return;
+    }
+
+    // Get editor's Slack ID for @mention
+    let editorMention = "";
+    const editorId = notification.payload?.editorId || notification.userId;
+    if (editorId) {
+      const [editor] = await db
+        .select({ slackUserId: userTable.slackUserId, name: userTable.name })
+        .from(userTable)
+        .where(eq(userTable.id, editorId))
+        .limit(1);
+      if (editor?.slackUserId) {
+        editorMention = `<@${editor.slackUserId}> `;
+        console.log(
+          `[Slack Dispatch] Tagging editor: ${editor.name} (${editor.slackUserId})`,
+        );
+      }
+    }
+
+    // Revision comment text stays out of Slack for QC rejections — link
+    // back to the app instead of pulling feedback content into the
+    // channel. Client rejections are the one exception: we show the
+    // comment directly and tag the scheduler (see below).
+    const taskId = notification.payload?.taskId;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const isClientRejection = notification.payload?.rejectedByRole === "client";
+
+    let schedulerMention = "";
+    if (isClientRejection && notification.payload?.schedulerId) {
+      const [scheduler] = await db
+        .select({ slackUserId: userTable.slackUserId, name: userTable.name })
+        .from(userTable)
+        .where(eq(userTable.id, notification.payload.schedulerId))
+        .limit(1);
+      if (scheduler?.slackUserId) {
+        schedulerMention = ` <@${scheduler.slackUserId}>`;
+        console.log(
+          `[Slack Dispatch] Tagging scheduler: ${scheduler.name} (${scheduler.slackUserId})`,
+        );
+      }
+    }
+
+    // Task now supports a separate video editor vs thumbnail editor — tag
+    // which deliverable this rejection is about so whoever gets pinged
+    // knows at a glance whether it's their video or their thumbnail.
+    const assetLabel = notification.payload?.folderType === "thumbnails" ? "Thumbnail" : "Video";
+
+    let mentionedNotification;
+    const isFinalRevision = isClientRejection && notification.payload?.isFinalRevision === true;
+    const rejectionCount = Number(notification.payload?.clientRejectionCount) || 0;
+    if (isClientRejection) {
+      const comment = notification.payload?.revisionComment;
+      const countNote = rejectionCount > 1 ? `\n\n_This is rejection #${rejectionCount} by the client for this task._` : "";
+      const finalNote = isFinalRevision
+        ? `\n\n*This is the client's FINAL revision.* Once QC approves it, it goes straight to scheduling and will not return to the client portal.`
+        : "";
+      mentionedNotification = {
+        ...notification,
+        title: isFinalRevision
+          ? `🚨 ${editorMention}Client Requested a FINAL REVISION — ${assetLabel} Needs Changes`
+          : `❗ ${editorMention}Client Rejected — ${assetLabel} Needs Revisions`,
+        body: `Your ${assetLabel.toLowerCase()} for "${notification.payload?.taskTitle || "Task"}" was ${isFinalRevision ? "sent back for a final revision" : "rejected"} by the client.${
+          comment ? `\n\n*Revision comments:*\n${comment}` : ""
+        }${finalNote}${countNote}${schedulerMention ? `\n\ncc${schedulerMention}` : ""}`,
+      };
+    } else {
+      const revisionNote = taskId
+        ? `\n\nCheck <${appUrl}/dashboard?task=${taskId}|E8 App> for the comments.`
+        : "\n\nCheck E8 App for the comments.";
+
+      mentionedNotification = {
+        ...notification,
+        title: `${editorMention}${assetLabel} Needs Revisions`,
+        body: `Your ${assetLabel.toLowerCase()} for "${notification.payload?.taskTitle || "Task"}" needs revisions.${revisionNote}`,
+      };
+    }
+
+    // Send to client channel ONLY
+    const delivered = await sendClientSlackWebhook(
+      notification.payload.clientId,
+      mentionedNotification,
+    );
+
+    // Fallback: if the client's own channel is disabled / has no webhook /
+    // failed, don't drop a client rejection silently — post it to the
+    // scheduling channel so someone still sees it.
+    if (!delivered && isClientRejection) {
+      console.warn(`[Slack Dispatch] Client channel unavailable for ${notification.payload.clientId}; falling back to scheduling channel`);
+      await sendToChannel("scheduling", {
+        ...mentionedNotification,
+        title: `⚠️ [client channel unavailable] ${mentionedNotification.title}`,
+        body: `${mentionedNotification.body}\n\n_Posted here because this client's Slack channel is disabled, missing a webhook, or failed._`,
+      });
+    }
+    return;
+  }
+
+  // 2b. CLIENT_GENERAL_COMMENT → Client channel ONLY (with @mention of the scheduler)
+  //     A freeform note from the client that isn't tied to a specific video —
+  //     sent from the "Send a note" button on the Content Review page.
+  //     There's no per-client scheduler assignment yet (scheduler is only
+  //     ever set per-task today), so — same as the QC admin mention above —
+  //     this hardcodes Daena's Slack ID until a real per-client assignment
+  //     exists to look up instead.
+  if (notificationType === "client_general_comment") {
+    console.log(`[Slack Dispatch] Client General Comment → Client channel only`);
+
+    if (!notification.payload?.clientId) {
+      console.log(`[Slack Dispatch] No clientId provided, skipping client_general_comment notification`);
+      return;
+    }
+
+    // Hardcoded scheduler's Slack ID (Daena) — see comment above.
+    const schedulerMention = `<@U0AQWFELDFH>`;
+    const clientName = notification.payload?.clientName || "A client";
+    const submitterName = notification.payload?.submitterName || "Someone";
+    const comment = notification.payload?.commentBody || "";
+
+    const mentionedNotification = {
+      ...notification,
+      title: `💬 New note from ${clientName}`,
+      body: `${submitterName} left a note that isn't about a specific video:\n\n"${comment}"\n\ncc ${schedulerMention}`,
+    };
+
+    // Send to client channel ONLY
+    await sendClientSlackWebhook(
+      notification.payload.clientId,
+      mentionedNotification,
+    );
+    return;
+  }
+
+  // 3. TASK_SCHEDULED → Scheduling Channel ONLY
+  if (notificationType === "task_scheduled") {
+    console.log(`[Slack Dispatch] Task Scheduled → Scheduling channel only`);
+
+    const stage = notification.payload?.notificationStage;
+    const taskTitle = notification.payload?.taskTitle || notification.title || "Task";
+    const schedulerId = notification.payload?.schedulerId;
+
+    // Get scheduler's Slack ID for @mention
+    let schedulerMention = "";
+    if (schedulerId) {
+      try {
+        const schedulerIdNum = Number(schedulerId);
+        const [scheduler] = await db
+          .select({ slackUserId: userTable.slackUserId, name: userTable.name })
+          .from(userTable)
+          .where(eq(userTable.id, schedulerIdNum))
+          .limit(1);
+        if (scheduler?.slackUserId) {
+          schedulerMention = `<@${scheduler.slackUserId}> `;
+        } else {
+          schedulerMention = `@${scheduler?.name?.replace(/\s+/g, '') || "scheduler"} `;
+        }
+      } catch (err) {
+        console.error("[Slack Dispatch] Failed to fetch scheduler:", err);
+        schedulerMention = "@scheduler ";
+      }
+    }
+
+    const scheduledNotification = { ...notification };
+
+    if (stage === "ready_for_scheduling") {
+      // Prefer the actual approver role captured at approval time (see
+      // status route) — falling back to the old client-policy-flag guess
+      // only for notifications queued before that payload field existed.
+      // The flag guess was wrong whenever a client generally requires
+      // review but THIS task's deliverable type is exempt from it: QC
+      // alone completes those, yet the flag alone said "Approved by Client".
+      let approvedBy: string;
+      let approvedByRole = notification.payload?.approvedByRole as string | undefined;
+      let taskForQc: { qcSpecialist: number | null; client: { requiresClientReview: boolean } | null } | null = null;
+
+      if (!approvedByRole && notification.payload?.taskId) {
+        try {
+          const t = await db.query.task.findFirst({
+            where: eq(taskTable.id, notification.payload.taskId),
+            with: { client: true },
+          });
+          taskForQc = t ? { qcSpecialist: t.qcSpecialist ?? null, client: t.client ? { requiresClientReview: t.client.requiresClientReview } : null } : null;
+          approvedByRole = taskForQc?.client?.requiresClientReview ? "client" : "qc";
+        } catch (e) {}
+      }
+      approvedByRole = approvedByRole || "qc";
+
+      if (notification.payload?.isFinalRevision === true && approvedByRole !== "client") {
+        approvedBy = "QC (client's final revision — sent straight to scheduling)";
+      } else if (approvedByRole === "client") {
+        approvedBy = "Client";
+      } else {
+        approvedBy = "QC";
+        // 🔥 Prefer the actual user who clicked Approve (captured at
+        // approval time in status/route.ts as approvedByUserId) over the
+        // task's assigned QC specialist — those aren't the same person
+        // whenever someone else approves on a task they weren't assigned
+        // to (coverage, an admin override, etc.), which is why this always
+        // named the same person regardless of who actually approved.
+        // approvedByUserId is only absent for notifications queued before
+        // this field existed — those still fall back to qcSpecialist.
+        const approverUserId = notification.payload?.approvedByUserId as number | undefined;
+        try {
+          if (approverUserId) {
+            const [approver] = await db
+              .select({ name: userTable.name })
+              .from(userTable)
+              .where(eq(userTable.id, approverUserId))
+              .limit(1);
+            if (approver?.name) approvedBy = approver.name;
+          } else {
+            if (!taskForQc && notification.payload?.taskId) {
+              const t = await db.query.task.findFirst({
+                where: eq(taskTable.id, notification.payload.taskId),
+                columns: { qcSpecialist: true },
+              });
+              taskForQc = t ? { qcSpecialist: t.qcSpecialist ?? null, client: null } : null;
+            }
+            if (taskForQc?.qcSpecialist) {
+              const [qcUser] = await db
+                .select({ name: userTable.name })
+                .from(userTable)
+                .where(eq(userTable.id, taskForQc.qcSpecialist))
+                .limit(1);
+              if (qcUser?.name) approvedBy = qcUser.name;
+            }
+          }
+        } catch (e) {
+          console.error("[Slack Dispatch] Failed to resolve approver name:", e);
+        }
+      }
+      scheduledNotification.message = `:mag: :eyes: ${schedulerMention}✅ Content Approved by ${approvedBy}: Task "${taskTitle}" has been approved.`;
+    } else {
+      scheduledNotification.title = "Content Scheduled";
+      scheduledNotification.body = `Task "${taskTitle}" has been ${stage === "posted" ? "posted" : "scheduled"}.`;
+    }
+
+    // Send to scheduling channel ONLY
+    await sendToChannel("scheduling", scheduledNotification);
+    return;
+  }
+
+  // 4. REVIEW_QUEUE (QC Approved, Client Review Pending) -> Scheduling Channel
+  if (notificationType === "review_queue") {
+    console.log(`[Slack Dispatch] Review Queue -> Scheduling channel`);
+    let taskTitle = notification.title || "Task";
+    let schedulerMention = "@scheduler ";
+
+    if (notification.payload?.taskId) {
+      try {
+        const [t] = await db
+          .select({ title: taskTable.title, scheduler: taskTable.scheduler })
+          .from(taskTable)
+          .where(eq(taskTable.id, notification.payload.taskId))
+          .limit(1);
+        if (t) {
+          taskTitle = t.title || taskTitle;
+          if (t.scheduler) {
+            const [schedUser] = await db
+              .select()
+              .from(userTable)
+              .where(eq(userTable.id, Number(t.scheduler)))
+              .limit(1);
+            if (schedUser?.slackUserId) {
+              schedulerMention = `<@${schedUser.slackUserId}> `;
+            } else {
+              schedulerMention = `@${schedUser?.name?.replace(/\s+/g, '') || "scheduler"} `;
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[Slack Dispatch] Review queue lookup failed", e);
+      }
+    }
+
+    const reviewNotification = { ...notification };
+    reviewNotification.message = `:mag: :eyes: ${schedulerMention}✅ Content Approved by QC: Task "${taskTitle}" has been approved by QC (Pending Client Review).`;
+
+    await sendToChannel("scheduling", reviewNotification);
+    return;
+  }
+
+  // 5. TASK_ASSIGNED → Editors Channel ONLY (with @mention of editor,
+  //    grouped into a single message listing how many + which tasks)
+  if (notificationType === "task_assigned") {
+    console.log(`[Slack Dispatch] Task Assigned → Editors channel only`);
+
+    const editorId = notification.userId;
+    if (!editorId) {
+      console.log(`[Slack Dispatch] No editorId provided, skipping task_assigned notification`);
+      return;
+    }
+
+    let editorMention = "";
+    const [editor] = await db
+      .select({ slackUserId: userTable.slackUserId, name: userTable.name })
+      .from(userTable)
+      .where(eq(userTable.id, editorId))
+      .limit(1);
+    if (editor?.slackUserId) {
+      editorMention = `<@${editor.slackUserId}> `;
+    } else if (editor?.name) {
+      editorMention = `${editor.name} `;
+    }
+
+    const taskTitles: string[] = notification.payload?.taskTitles || [];
+    const count = taskTitles.length || 1;
+    const taskListText = taskTitles.length > 0
+      ? taskTitles.map((t, i) => `${i + 1}. ${t || "Untitled"}`).join("\n")
+      : "";
+
+    const assignedNotification = {
+      ...notification,
+      title: undefined,
+      message: `📋 ${editorMention}You've been assigned ${count} ${count === 1 ? "task" : "tasks"}:\n${taskListText}`,
+    };
+
+    await sendToChannel("editors", assignedNotification);
+    return;
+  }
+
+  // =========================================================================
+  // ALL OTHER NOTIFICATION TYPES ARE IGNORED
+  // =========================================================================
+  console.log(`[Slack Dispatch] Notification type "${notificationType}" is not configured for Slack - skipping`);
+}
+
+// ---------------------------------------------------------------------------
+// 5. Utility — Send a test message to a webhook URL
+// ---------------------------------------------------------------------------
+export async function sendSlackTestMessage(webhookUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: "✅ *E8 Productions* — Slack integration is working!",
+            },
+          },
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: "This is a test message from your notification system.",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. SPECIALIZED — Send Daily Summary Report to a specific channel
+// ---------------------------------------------------------------------------
+export async function sendDailySummaryToSlack(
+  report: any,
+  csvDownloadUrl?: string
+): Promise<void> {
+  const webhookUrl = process.env.SLACKS_OPS_CHANNEL;
+  // Still post the pulse even if CSV upload failed — missing CSV must not
+  // silently skip the ops-channel message entirely.
+  if (!webhookUrl) return;
+
+  try {
+    const formattedDate = new Date(report.date + 'T12:00:00').toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const members = report.totalTeamMembers ?? 0;
+    const actions = report.totalTasksMoved ?? 0;
+    const section: any = {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `📊 *Daily Production Report — ${formattedDate}*\n${members} team member${members === 1 ? "" : "s"}, ${actions} action${actions === 1 ? "" : "s"} tracked.`
+      },
+    };
+
+    if (csvDownloadUrl) {
+      section.accessory = {
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: "📥 Download CSV",
+          emoji: true
+        },
+        url: csvDownloadUrl,
+        action_id: "download_report"
+      };
+    }
+
+    await enqueueNotification({ kind: "slack-webhook", url: webhookUrl, blocks: [section] });
+
+    console.log(`✅ [Slack Report] Daily summary queued to ops channel${csvDownloadUrl ? " (with CSV)" : " (no CSV link)"}`);
+  } catch (err) {
+    console.error("[Slack Report] Failed to send summary link:", err);
+  }
+}

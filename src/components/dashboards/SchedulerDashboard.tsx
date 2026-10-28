@@ -1,0 +1,934 @@
+import { useState, useEffect, useRef } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import { Textarea } from '../ui/textarea';
+import { Label } from '../ui/label';
+import { Calendar, ChevronLeft, ChevronRight, Clock, Users, MapPin, CheckCircle, FileText, Eye, ArrowLeft, AlertTriangle, MessageSquare, User as UserIcon, Download } from 'lucide-react';
+import { useTaskWorkflow, WorkflowTask, TaskFeedbackItem } from '../workflow/TaskWorkflowEngine';
+import { RevisionMedia } from '../review/RevisionMedia';
+import { FilePreviewModal } from '../FileViewerModal';
+import { toast } from 'sonner';
+import { sortTaskImages } from '@/lib/task-image-order';
+import { TeamEodReport } from './TeamEodReport';
+import { Send } from 'lucide-react';
+import { PageHeader } from '../ui/page-header';
+import { DeliverableGapTracker } from './DeliverableGapTracker';
+import { useAuth } from '../auth/AuthContext';
+import { useViewAsRole } from '../auth/ViewAsRoleContext';
+
+// Mock current scheduler user
+const currentUser = {
+  id: 'sch1',
+  name: 'Emma White',
+  role: 'scheduler'
+};
+
+const currentDate = new Date(2024, 7, 10); // August 2024
+
+// Mock scheduled events (in real app would come from API)
+const calendarEvents: Record<string, any[]> = {
+  '2024-08-12': [
+    { id: 1, title: 'Video Shoot - Product Demo', time: '09:00', type: 'production', color: 'bg-blue-500' },
+    { id: 2, title: 'Client Meeting - Brand Review', time: '14:00', type: 'meeting', color: 'bg-purple-500' }
+  ],
+  '2024-08-13': [
+    { id: 3, title: 'Photo Shoot - Lifestyle', time: '10:00', type: 'production', color: 'bg-blue-500' }
+  ],
+  '2024-08-14': [
+    { id: 4, title: 'Content Delivery', time: '11:00', type: 'delivery', color: 'bg-green-500' },
+    { id: 5, title: 'Team Standup', time: '09:00', type: 'meeting', color: 'bg-purple-500' }
+  ],
+  '2024-08-15': [
+    { id: 6, title: 'Campaign Launch', time: '16:00', type: 'launch', color: 'bg-orange-500' }
+  ],
+  '2024-08-16': [
+    { id: 7, title: 'Video Shoot - Interview', time: '13:00', type: 'production', color: 'bg-blue-500' }
+  ]
+};
+
+// Initial scheduling tasks
+const initialSchedulingTasks: WorkflowTask[] = [];
+
+
+function mapStatus(status: string) {
+  if (status === "QC_APPROVED" || status === "READY_FOR_SCHEDULER")
+    return "pending";
+  if (status === "SCHEDULED") return "completed";
+  return "pending";
+}
+
+// A "General" client note: saved with timestamp 'General' and/or category 'general'.
+function isGeneralFeedback(fb: { timestamp?: string | null; category?: string | null }): boolean {
+  return fb.timestamp === 'General' || (fb.category || '').split(',').includes('general');
+}
+
+function isHardPostTask(task: WorkflowTask): boolean {
+  // deliverableType is stored as the short code ("hp"), not the long phrase.
+  const type = ((task as any).deliverableType || (task as any).taskType || '').toLowerCase().trim();
+  return type === 'hp' || type.includes('hard post') || type.includes('graphic image');
+}
+
+function getTaskThumbnails(task: WorkflowTask): string[] {
+  if (!task.files || task.files.length === 0) return [];
+
+  if (isHardPostTask(task)) {
+    // Hard post tasks store all their images under the main folder — show every one in custom or upload order
+    const activeImages = task.files
+      .filter((f) => f.mimeType?.startsWith('image/') && (f as any).isActive !== false);
+    const sorted = sortTaskImages(activeImages, (task as any)?.attachments?.imageOrder);
+    return sorted.map((f) => f.url);
+  }
+
+  // All images from the thumbnails folder
+  const thumbs = task.files.filter(
+    (f) => f.folderType === 'thumbnails' && f.mimeType?.startsWith('image/')
+  );
+  if (thumbs.length > 0) return thumbs.map((f) => f.url);
+  // Fallback: any active image
+  const anyImage = task.files.find((f) => f.mimeType?.startsWith('image/'));
+  return anyImage ? [anyImage.url] : [];
+}
+
+function CalendarGrid() {
+  const [currentMonth, setCurrentMonth] = useState(currentDate);
+
+  const getDaysInMonth = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  };
+
+  const getFirstDayOfMonth = (date: Date) => {
+    return new Date(date.getFullYear(), date.getMonth(), 1).getDay();
+  };
+
+  const daysInMonth = getDaysInMonth(currentMonth);
+  const firstDay = getFirstDayOfMonth(currentMonth);
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  const emptyDays = Array.from({ length: firstDay }, (_, i) => null);
+
+  const formatEventDate = (day: number) => {
+    const year = currentMonth.getFullYear();
+    const month = String(currentMonth.getMonth() + 1).padStart(2, '0');
+    const dayStr = String(day).padStart(2, '0');
+    return `${year}-${month}-${dayStr}`;
+  };
+
+
+
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-medium">
+          {currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+        </h3>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1))}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1))}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-7 gap-1">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+          <div key={day} className="p-2 text-center text-sm font-medium text-muted-foreground">
+            {day}
+          </div>
+        ))}
+
+        {emptyDays.map((_, index) => (
+          <div key={`empty-${index}`} className="p-2 h-24"></div>
+        ))}
+
+        {days.map(day => {
+          const dateKey = formatEventDate(day);
+          const dayEvents = calendarEvents[dateKey] || [];
+          const isToday = day === 10; // Current day for demo
+
+          return (
+            <div
+              key={day}
+              className={`p-2 h-24 border border-border rounded-lg hover:bg-muted/50 ${isToday ? 'bg-primary/10 border-primary' : ''
+                }`}
+            >
+              <div className={`text-sm mb-1 ${isToday ? 'font-medium text-primary' : ''}`}>
+                {day}
+              </div>
+              <div className="space-y-1">
+                {dayEvents.slice(0, 2).map((event: any) => (
+                  <div
+                    key={event.id}
+                    className={`text-xs px-1 py-0.5 rounded text-white truncate ${event.color}`}
+                  >
+                    {event.time} {event.title}
+                  </div>
+                ))}
+                {dayEvents.length > 2 && (
+                  <div className="text-xs text-muted-foreground">
+                    +{dayEvents.length - 2} more
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function SchedulerDashboard() {
+  const { user } = useAuth();
+  const { viewingAsRole } = useViewAsRole();
+  // const [schedulingTasks, setSchedulingTasks] = useState<WorkflowTask[]>(initialSchedulingTasks);
+  const [schedulingTasks, setSchedulingTasks] = useState<WorkflowTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedTask, setSelectedTask] = useState<WorkflowTask | null>(null);
+  const [feedbackVersionFilter, setFeedbackVersionFilter] = useState<number | 'all'>('all');
+  const [eodReportOpen, setEodReportOpen] = useState(false);
+
+  // Desktop app download progress — window.e8 only exists inside the
+  // Electron shell (see apps/desktop/src/preload.js). Same pattern used
+  // in ClientDashboard/EditorDashboard.
+  const downloadFileNamesRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    const desktop = (window as any).e8;
+    if (!desktop?.isDesktopApp) return;
+
+    desktop.onDownloadProgress(({ fileId, percent }: { fileId: string; percent: number }) => {
+      const fileName = downloadFileNamesRef.current[fileId] || "file";
+
+      if (percent >= 100) {
+        toast.success(`${fileName} downloaded`, { id: `download-${fileId}` });
+      } else {
+        toast.loading(`Downloading ${fileName}... ${percent}%`, { id: `download-${fileId}` });
+      }
+    });
+  }, []);
+
+  const handleDownloadFile = async (file: { id: string; name: string; url: string }) => {
+    const desktop = (window as any).e8;
+
+    if (desktop?.isDesktopApp) {
+      downloadFileNamesRef.current[file.id] = file.name;
+      toast.loading(`Downloading ${file.name}... 0%`, { id: `download-${file.id}` });
+
+      const result = await desktop.downloadFile(file.id, file.name);
+
+      if (!result.success) {
+        toast.error(`Failed to download ${file.name}: ${result.message || "unknown error"}`, {
+          id: `download-${file.id}`,
+        });
+      } else if (result.alreadyDownloaded) {
+        toast.success(`${file.name} already downloaded`, { id: `download-${file.id}` });
+      }
+      return;
+    }
+
+    const isS3 = file.url?.includes('amazonaws.com') || file.url?.includes('r2.cloudflarestorage.com') || file.url?.includes('r2.dev');
+    if (isS3) {
+      window.open(`/api/files/${file.id}/download`, '_blank');
+    } else {
+      window.open(file.url, '_blank');
+    }
+  };
+  const { tasks: workflowTasks, completeSchedulingTask } = useTaskWorkflow();
+  const [previewFile, setPreviewFile] = useState<any | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+
+  // Send back to editor state
+  const [showSendBackDialog, setShowSendBackDialog] = useState(false);
+  const [sendBackFeedback, setSendBackFeedback] = useState('');
+  const [isSendingBack, setIsSendingBack] = useState(false);
+
+  // useEffect(() => {
+  //   // Filter workflow tasks for scheduling
+  //   const userSchedulingTasks = workflowTasks.filter(task => 
+  //     task.assignedTo === currentUser.id && task.type === 'scheduling'
+  //   );
+
+  //   // Combine with initial tasks
+  //   const allSchedulingTasks = [...initialSchedulingTasks, ...userSchedulingTasks.filter(wt => 
+  //     !initialSchedulingTasks.some(it => it.id === wt.id)
+  //   )];
+
+  //   setSchedulingTasks(allSchedulingTasks);
+
+  //   // Auto-select first pending task
+  //   if (!selectedTask && allSchedulingTasks.length > 0) {
+  //     const firstPending = allSchedulingTasks.find(task => task.status === 'pending');
+  //     if (firstPending) setSelectedTask(firstPending);
+  //   }
+  // }, [workflowTasks, selectedTask]);
+
+  useEffect(() => {
+    setFeedbackVersionFilter('all');
+  }, [selectedTask?.id]);
+
+  useEffect(() => {
+    async function loadTasks() {
+      try {
+        const headers: Record<string, string> = {};
+        if (viewingAsRole && viewingAsRole !== user?.role) {
+          headers["x-viewing-as"] = viewingAsRole;
+        }
+
+        const res = await fetch("/api/tasks", {
+          cache: "no-store",
+          credentials: "include",
+          headers,
+        });
+
+        if (!res.ok) {
+          console.error("Error loading scheduler tasks: HTTP", res.status);
+          setSchedulingTasks([]);
+          return;
+        }
+
+        const data = await res.json();
+        const rawTasks = Array.isArray(data?.tasks)
+          ? data.tasks
+          : Array.isArray(data)
+          ? data
+          : [];
+
+        const mapped = rawTasks.map((t: any) => ({
+          id: t.id,
+          title: t.title,
+          description: t.description,
+          type: "scheduling",
+          status: mapStatus(t.status),
+          assignedTo: String(t.assignedSchedulerId),
+          dueDate: t.dueDate,
+          clientId: t.clientId,
+          oneOffDeliverableId: t.oneOffDeliverableId,
+          projectId: t.clientId,
+          priority: t.priority,
+          feedback: t.feedback,
+          // Version-tracked revision comments, with who wrote each one
+          taskFeedback: (t.taskFeedback || []).map((fb: any): TaskFeedbackItem => ({
+            id: fb.id,
+            fileId: fb.fileId,
+            folderType: fb.folderType,
+            feedback: fb.feedback,
+            status: fb.status,
+            timestamp: fb.timestamp,
+            category: fb.category,
+            createdAt: fb.createdAt,
+            resolvedAt: fb.resolvedAt,
+            acknowledgedAt: fb.acknowledgedAt,
+            acknowledgedBy: fb.acknowledgedBy,
+            fileVersion: fb.file?.version || 1,
+            fileName: fb.file?.name || null,
+            authorId: fb.user?.id,
+            authorName: fb.user?.name || 'Unknown',
+            authorRole: fb.user?.role || null,
+            screenshotUrl: fb.screenshotUrl || null,
+            voiceUrl: fb.voiceUrl || null,
+            voiceDurationSec: fb.voiceDurationSec ?? null,
+            attachments: fb.attachments || null,
+          })),
+          files: (t.files || [])
+            .filter((f: any) => f.isActive !== false)
+            .map((f: any) => ({
+              id: f.id,
+              name: f.name,
+              url: f.url,
+              size: f.size || 0,
+              mimeType: f.mimeType || f.contentType || '',
+              folderType: f.folderType || 'main',
+            })),
+        }));
+
+        setSchedulingTasks(mapped);
+      } catch (err) {
+        console.error("Error loading scheduler tasks:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadTasks();
+
+    // 🔥 Regular polling for new tasks - every 30 seconds
+    const interval = setInterval(() => {
+      console.log("🔄 Polling for new scheduler tasks...");
+      loadTasks();
+    }, 30000);
+    
+    return () => clearInterval(interval);
+  }, [viewingAsRole, user?.role]);
+
+  const handleSendBack = async () => {
+    if (!selectedTask || !sendBackFeedback.trim()) return;
+    setIsSendingBack(true);
+    try {
+      const res = await fetch(`/api/tasks/${selectedTask.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          status: 'REJECTED_BY_QC',
+          schedulerFeedback: sendBackFeedback.trim(),
+          route: 'editor',
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || 'Failed to send back');
+      }
+      toast.success('Task sent back to editor with feedback');
+      setShowSendBackDialog(false);
+      setSendBackFeedback('');
+      // Remove from queue
+      setSchedulingTasks((prev) => prev.filter((t) => t.id !== selectedTask.id));
+      setSelectedTask(null);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to send task back');
+    } finally {
+      setIsSendingBack(false);
+    }
+  };
+
+  const handleScheduleTask = async (task: WorkflowTask) => {
+    try {
+      // 1️⃣ Immediately update UI (optimistic update)
+      setSchedulingTasks((prev) =>
+        prev.map((t) => (t.id === task.id ? { ...t, status: "completed" } : t))
+      );
+
+      // 2️⃣ Call backend API
+      await fetch(`/api/tasks/${task.id}/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          scheduledAt: new Date().toISOString(),
+        }),
+      });
+
+      // 3️⃣ Notify workflow engine (if you're still using it)
+      await completeSchedulingTask(task);
+
+      console.log("✅ Task scheduled:", task.id);
+
+      // 4️⃣ Move to the next pending task using the UPDATED list
+      setSchedulingTasks((prev) => {
+        const updated = prev; // we've already updated the status at #1
+
+        const next = updated.find(
+          (t) => t.status === "pending" && t.id !== task.id
+        );
+
+        setSelectedTask(next || null);
+
+        return updated;
+      });
+    } catch (err) {
+      console.error("❌ Error scheduling:", err);
+
+      // 5️⃣ Roll back if needed
+      setSchedulingTasks((prev) =>
+        prev.map((t) => (t.id === task.id ? { ...t, status: "pending" } : t))
+      );
+    }
+  };
+
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+
+
+  // Stats
+  const pendingTasks = schedulingTasks.filter(task => task.status === 'pending').length;
+  const scheduledToday = schedulingTasks.filter(task =>
+    task.status === 'completed' &&
+    new Date(task.createdAt).toDateString() === new Date().toDateString()
+  ).length;
+  const urgentTasks = 0; // Removed priority logic
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Scheduler Portal"
+        description="Schedule QC-approved content and manage production timeline"
+        actions={
+          <>
+            <Button variant="outline" onClick={() => setEodReportOpen(true)}>
+              <Send className="h-4 w-4 mr-2" />
+              Send EOD Report
+            </Button>
+            <Button>
+              <Calendar className="h-4 w-4 mr-2" />
+              New Schedule
+            </Button>
+          </>
+        }
+      />
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex flex-col items-center text-center gap-2">
+              <Clock className="h-8 w-8 text-blue-500" />
+              <div>
+                <p className="text-sm text-muted-foreground">Pending Tasks</p>
+                <h3 className="text-2xl font-bold">{pendingTasks}</h3>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex flex-col items-center text-center gap-2">
+              <CheckCircle className="h-8 w-8 text-green-500" />
+              <div>
+                <p className="text-sm text-muted-foreground">Scheduled Today</p>
+                <h3 className="text-2xl font-bold">{scheduledToday}</h3>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex flex-col items-center text-center gap-2">
+              <Users className="h-8 w-8 text-purple-500" />
+              <div>
+                <p className="text-sm text-muted-foreground">Active Events</p>
+                <h3 className="text-2xl font-bold">7</h3>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Daily deliverable gap — banner + per-client breakdown */}
+      <DeliverableGapTracker />
+
+      {/* Workflow Info */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-purple-100 rounded-lg">
+              <Calendar className="h-5 w-5 text-purple-600" />
+            </div>
+            <div className="flex-1">
+              <h4 className="font-medium">Automated Content Flow</h4>
+              <p className="text-sm text-muted-foreground">
+                You receive QC-approved content automatically. Once you schedule it, the workflow is complete.
+                Content is ready for production and client delivery.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Calendar */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Production Calendar</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CalendarGrid />
+          </CardContent>
+        </Card>
+
+        {/* Approved Queue */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              Approved Queue
+              <Badge variant="secondary">{pendingTasks}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="space-y-0 max-h-[600px] overflow-y-auto">
+              {schedulingTasks.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground">
+                  <Clock className="h-12 w-12 mx-auto mb-4 opacity-40" />
+                  <p>No approved tasks to schedule</p>
+                  <p className="text-xs">Tasks will appear here after QC approval</p>
+                </div>
+              ) : (
+                schedulingTasks.map((task) => (
+                  <div
+                    key={task.id}
+                    className={`p-4 border-b hover:bg-muted/50 cursor-pointer transition-colors ${selectedTask?.id === task.id ? 'bg-muted' : ''
+                      }`}
+                    onClick={() => setSelectedTask(task)}
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between">
+                        <div className="flex flex-col gap-1">
+                          <h4 className="font-medium text-sm">
+                            {task.title.replace('Schedule: ', '')}
+                          </h4>
+                          {(task as any).oneOffDeliverableId && (
+                            <Badge variant="outline" className="w-fit text-[10px] h-4 px-1 bg-yellow-50 text-yellow-700 border-yellow-200">
+                              One-Off
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Thumbnails strip */}
+                      {(() => {
+                        const thumbs = getTaskThumbnails(task);
+                        if (thumbs.length === 0) return null;
+                        return (
+                          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                            {thumbs.map((url, i) => (
+                              <img
+                                key={i}
+                                src={url}
+                                alt={`Thumbnail ${i + 1}`}
+                                className="h-16 w-24 object-cover rounded-md flex-shrink-0 border border-zinc-200"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                              />
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      <div className="space-y-2 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                          <MapPin className="h-3 w-3" />
+                          <span>From QC Approval</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Clock className="h-3 w-3" />
+                          <span>Due {task.dueDate}</span>
+                        </div>
+                        {task.files && (
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-3 w-3" />
+                            <span>{task.files.length} files</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-xs">
+                          {task.id}
+                        </Badge>
+                        <div className="flex gap-1">
+                          {task.status === 'completed' ? (
+                            <Badge variant="default" className="text-xs">
+                              Scheduled
+                            </Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleScheduleTask(task);
+                              }}
+                            >
+                              Schedule
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Selected Task Details */}
+      {selectedTask && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Task Details: {selectedTask.title.replace('Schedule: ', '')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {/* Task Info Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Project ID</p>
+                  <p className="font-medium">{selectedTask.projectId || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Due Date</p>
+                  <p className="font-medium">{selectedTask.dueDate}</p>
+                </div>
+              </div>
+
+              {/* QC Feedback */}
+              {selectedTask.feedback && (
+                <div>
+                  <h4 className="font-medium mb-2">QC Feedback</h4>
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm text-green-800">{selectedTask.feedback}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Revision Comments — version-tracked, shows who left each comment */}
+              {selectedTask.taskFeedback && selectedTask.taskFeedback.length > 0 && (() => {
+                const allVersions = [...new Set(selectedTask.taskFeedback!.map(fb => fb.fileVersion || 1))].sort((a, b) => b - a);
+                const visibleComments = feedbackVersionFilter === 'all'
+                  ? selectedTask.taskFeedback!
+                  : selectedTask.taskFeedback!.filter(fb => (fb.fileVersion || 1) === feedbackVersionFilter);
+
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-medium flex items-center gap-1.5">
+                        <MessageSquare className="h-4 w-4" />
+                        Revision Comments ({visibleComments.length})
+                        {visibleComments.some(isGeneralFeedback) && (
+                          <span className="text-xs font-normal text-purple-700">
+                            · {visibleComments.filter(isGeneralFeedback).length} general
+                          </span>
+                        )}
+                      </h4>
+                      {allVersions.length > 1 && (
+                        <select
+                          className="text-xs border rounded px-2 py-1 bg-background text-foreground"
+                          value={feedbackVersionFilter}
+                          onChange={e => setFeedbackVersionFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                        >
+                          <option value="all">All versions</option>
+                          {allVersions.map(v => (
+                            <option key={v} value={v}>V{v}{v === allVersions[0] ? ' (current)' : ''}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    {visibleComments.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No comments on this version.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-80 overflow-y-auto">
+                        {visibleComments.map((fb) => (
+                          <div key={fb.id} className="p-3 border rounded-lg bg-muted/30">
+                            <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
+                                  V{fb.fileVersion || 1}
+                                </Badge>
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 capitalize">
+                                  {fb.folderType}
+                                </Badge>
+                                {isGeneralFeedback(fb) ? (
+                                  <Badge className="text-[10px] px-1.5 py-0 h-5 bg-purple-100 text-purple-700 hover:bg-purple-100">
+                                    General note
+                                  </Badge>
+                                ) : (
+                                  <>
+                                    {fb.category && (
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 capitalize">
+                                        {fb.category}
+                                      </Badge>
+                                    )}
+                                    {fb.timestamp && (
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 bg-blue-50">
+                                        <Clock className="h-2.5 w-2.5 mr-0.5" />
+                                        {fb.timestamp}
+                                      </Badge>
+                                    )}
+                                  </>
+                                )}
+                                {fb.status === 'resolved' && (
+                                  <Badge className="text-[10px] px-1.5 py-0 h-5 bg-green-100 text-green-700">
+                                    Resolved
+                                  </Badge>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-muted-foreground shrink-0">
+                                {fb.createdAt ? new Date(fb.createdAt).toLocaleDateString() : ''}
+                              </span>
+                            </div>
+                            <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words mb-1.5">
+                              {fb.feedback}
+                            </p>
+                            <div className="mb-1.5">
+                              <RevisionMedia
+                                media={fb}
+                                timestamp={isGeneralFeedback(fb) ? null : fb.timestamp}
+                                authorLine={`${fb.authorName || 'Reviewer'} · ${fb.createdAt ? new Date(fb.createdAt).toLocaleString() : ''}`}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <UserIcon className="h-3 w-3" />
+                              <span className="font-medium">{fb.authorName}</span>
+                              {fb.authorRole && <span className="capitalize">· {fb.authorRole}</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Files */}
+              {selectedTask.files && selectedTask.files.length > 0 && (
+                <div>
+                  <h4 className="font-medium mb-3">Approved Files ({selectedTask.files.length})</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {selectedTask.files.map((file) => (
+                      <div key={file.id} className="border rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <FileText className="h-4 w-4" />
+                          <span className="text-sm font-medium truncate">{file.name}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          {formatFileSize(file.size)}
+                        </p>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => {
+                              setPreviewFile(file);
+                              setIsPreviewOpen(true);
+                            }}
+                          >
+                            <Eye className="h-3 w-3 mr-1" />
+                            View
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDownloadFile(file)}
+                            title="Download"
+                          >
+                            <Download className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Action */}
+              {selectedTask.status === 'pending' && (
+                <div className="flex flex-col sm:flex-row justify-center gap-3 pt-4">
+                  <Button
+                    size="lg"
+                    onClick={() => handleScheduleTask(selectedTask)}
+                  >
+                    <Calendar className="h-4 w-4 mr-2" />
+                    Schedule This Content
+                  </Button>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300"
+                    onClick={() => {
+                      setSendBackFeedback('');
+                      setShowSendBackDialog(true);
+                    }}
+                  >
+                    <ArrowLeft className="h-4 w-4 mr-2" />
+                    Send Back to Editor
+                  </Button>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        file={previewFile}
+        open={isPreviewOpen}
+        onOpenChange={setIsPreviewOpen}
+      />
+
+      {/* Send Back to Editor Dialog */}
+      <Dialog open={showSendBackDialog} onOpenChange={setShowSendBackDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Send Back to Editor
+            </DialogTitle>
+            <DialogDescription>
+              {selectedTask && (
+                <span className="block text-xs text-zinc-500 mt-1 truncate">
+                  Task: {selectedTask.title.replace('Schedule: ', '')}
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+              The editor will be notified and the task will be returned to their queue for revision.
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="sendback-feedback">
+                Feedback / Reason <span className="text-red-500">*</span>
+              </Label>
+              <Textarea
+                id="sendback-feedback"
+                placeholder="Describe what needs to be fixed or changed before this can be scheduled…"
+                className="min-h-[120px] resize-none"
+                value={sendBackFeedback}
+                onChange={(e) => setSendBackFeedback(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {sendBackFeedback.length}/500 characters
+              </p>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowSendBackDialog(false);
+                setSendBackFeedback('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={!sendBackFeedback.trim() || isSendingBack}
+              onClick={handleSendBack}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {isSendingBack ? 'Sending…' : 'Send Back to Editor'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <TeamEodReport open={eodReportOpen} onOpenChange={setEodReportOpen} isDialog={true} />
+    </div>
+  );
+}

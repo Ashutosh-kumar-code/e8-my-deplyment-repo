@@ -1,0 +1,505 @@
+export const dynamic = 'force-dynamic';
+import { getDbHttp } from "@/lib/db";
+import {
+  client as clientTable,
+  task,
+  monthlyDeliverable,
+  oneOffDeliverable,
+  recurringTask,
+  monthlyRun,
+  file as fileTable,
+  brandAsset,
+} from "@/lib/db/schema";
+import { createId } from "@/lib/db/id";
+import { and, eq, inArray, gte, lte } from "drizzle-orm";
+import { NextRequest, NextResponse } from "next/server";
+import { getUserFromToken, hasRole } from "@/lib/auth-helpers";
+import { sendToChannel } from "@/lib/slack";
+
+// ---------------------------------------------------------------------------
+// SECURITY FIX (see audit): GET/PUT/DELETE on a single client previously had
+// NO auth check at all — anyone who knew/guessed a client id could read full
+// billing/PII, rewrite it, or cascade-delete the client entirely.
+//
+// This is an internal admin/manager CRUD surface (ClientManagement.tsx) —
+// client-role users fetch their own record through /api/client/me instead —
+// so all three handlers below now require a logged-in admin or manager.
+// ---------------------------------------------------------------------------
+function requireStaff(req: NextRequest) {
+  const currentUser = getUserFromToken(req);
+  if (!currentUser) {
+    return { error: NextResponse.json({ message: "Unauthorized" }, { status: 401 }), user: null };
+  }
+  if (!hasRole(currentUser, "admin") && !hasRole(currentUser, "manager")) {
+    return { error: NextResponse.json({ message: "Access denied" }, { status: 403 }), user: null };
+  }
+  return { error: null, user: currentUser };
+}
+
+export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const db = getDbHttp();
+  try {
+    const { error } = requireStaff(req);
+    if (error) return error;
+
+    const { id } = await context.params;
+
+    // Get current month date range
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const client = await db.query.client.findFirst({
+      where: eq(clientTable.id, id),
+      with: {
+        monthlyDeliverables: true,
+        oneOffDeliverables: true,
+        brandAssets: true,
+        recurringTasks: true,
+        tasks: {
+          where: (t, { and, gte, lte }) => and(gte(t.createdAt, startOfMonth.toISOString()), lte(t.createdAt, endOfMonth.toISOString())),
+          columns: {
+            id: true,
+            status: true,
+          },
+        },
+      }
+    });
+
+    if (!client) {
+      return NextResponse.json({ message: "Client not found" }, { status: 404 });
+    }
+
+    // Calculate total deliverables for the month
+    const totalDeliverables = (client.monthlyDeliverables ?? []).reduce(
+      (sum, d) => sum + (d.quantity ?? 0),
+      0
+    );
+
+    // Count completed tasks (COMPLETED or SCHEDULED means posted/done)
+    const completedTasks = (client.tasks ?? []).filter(
+      (t) => t.status === "COMPLETED" || t.status === "SCHEDULED"
+    ).length;
+
+    const normalizedClient = {
+      ...client,
+      emails: client.emails ?? [],
+      phones: client.phones ?? [],
+      monthlyDeliverables: client.monthlyDeliverables ?? [],
+      oneOffDeliverables: client.oneOffDeliverables ?? [],
+      brandAssets: client.brandAssets ?? [],
+      recurringTasks: client.recurringTasks ?? [],
+      brandGuidelines: client.brandGuidelines ?? {
+        primaryColors: [],
+        secondaryColors: [],
+        fonts: [],
+        logoUsage: "",
+        toneOfVoice: "",
+        brandValues: "",
+        targetAudience: "",
+        contentStyle: "",
+      },
+      projectSettings: client.projectSettings ?? {
+        defaultVideoLength: "60 seconds",
+        preferredPlatforms: [],
+        contentApprovalRequired: false,
+        quickTurnaroundAvailable: false,
+      },
+      billing: client.billing ?? {
+        monthlyFee: "",
+        billingFrequency: "monthly",
+        billingDay: 1,
+        paymentMethod: "credit-card",
+        nextBillingDate: "",
+        notes: "",
+      },
+      postingSchedule: client.postingSchedule ?? {},
+      // 🔥 Dynamic progress calculation
+      currentProgress: {
+        completed: completedTasks,
+        total: totalDeliverables,
+      },
+      // Remove tasks from response to keep it clean
+      tasks: undefined,
+    };
+
+    return NextResponse.json({ client: normalizedClient });
+  } catch (err) {
+    console.error("GET /clients/:id error:", err);
+    return NextResponse.json({ message: "Server error" }, { status: 500 });
+  }
+}
+
+export async function PUT(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const db = getDbHttp();
+  try {
+    const { error, user: currentUser } = requireStaff(req);
+    if (error) return error;
+
+    const { id } = await context.params;
+    const data = await req.json();
+
+    console.log("📝 PUT /clients/:id - Received data:", JSON.stringify(data, null, 2));
+
+    let clientReview = false;
+    let videographer = false;
+    let coverImage = false;
+
+    const {
+      name,
+      email,
+      emails,
+      companyName,
+      address,
+      phone,
+      phones,
+      status,
+      accountManagerId,
+      brandGuidelines,
+      projectSettings,
+      billing,
+      postingSchedule,
+      clientReviewRequired,
+      clientReviewDeliverableTypes,
+      videographerRequired,
+      coverImageRequired,
+      hasPostingServices,
+      slackWebhookUrl,
+      slackChannelName,
+      slackEnabled,
+      templateHashtags,
+      monthlyDeliverables = [],
+      oneOffDeliverables = [],
+      shootDaysPerMonth,
+      scriptsRequired,
+    } = data;
+
+    if (clientReviewRequired === "yes") {
+      clientReview = true;
+    }
+
+    if (videographerRequired === "yes") {
+      videographer = true;
+    }
+
+    if (coverImageRequired === "yes") {
+      coverImage = true;
+    }
+
+    const additionalEmails = (emails || []).filter((e: string) => e.trim() !== "");
+    const additionalPhones = (phones || []).filter((p: string) => p.trim() !== "");
+
+    // Capture pre-update hashtags so we can tell what's genuinely new after
+    // the update — the frontend sends the whole list every time, not just
+    // additions, so a diff is the only way to know what changed.
+    let previousHashtags: string[] = [];
+    if (templateHashtags !== undefined) {
+      const [existingClient] = await db.select({ templateHashtags: clientTable.templateHashtags }).from(clientTable).where(eq(clientTable.id, id)).limit(1);
+      previousHashtags = existingClient?.templateHashtags ?? [];
+    }
+
+    // Update client basic info
+    const [updatedClient] = await db.update(clientTable).set({
+      name,
+      email,
+      emails: additionalEmails,
+      companyName,
+      address,
+      phone,
+      phones: additionalPhones,
+      status,
+      accountManagerId,
+      brandGuidelines,
+      projectSettings,
+      billing,
+      postingSchedule,
+      requiresClientReview: clientReview,
+      clientReviewDeliverableTypes: clientReviewDeliverableTypes ?? [],
+      requiresVideographer: videographer,
+      requiresCoverImage: coverImage,
+      hasPostingServices,
+      ...(slackWebhookUrl !== undefined && { slackWebhookUrl }),
+      ...(slackChannelName !== undefined && { slackChannelName }),
+      ...(slackEnabled !== undefined && { slackEnabled }),
+      ...(templateHashtags !== undefined && {
+        templateHashtags: (templateHashtags || []).filter((t: string) => t.trim() !== ""),
+      }),
+      ...(shootDaysPerMonth !== undefined && shootDaysPerMonth !== "" && {
+        shootDaysPerMonth: Math.max(0, Math.min(99, Number(shootDaysPerMonth) || 0)),
+      }),
+      ...(scriptsRequired !== undefined && { scriptsRequired: !!scriptsRequired }),
+      updatedAt: new Date().toISOString(),
+    }).where(eq(clientTable.id, id)).returning();
+
+    // Notify the scheduling channel about newly-added hashtags only —
+    // never on removals, and never when templateHashtags wasn't touched.
+    if (templateHashtags !== undefined) {
+      const newHashtags = (templateHashtags || []).map((t: string) => t.trim()).filter((t: string) => t !== "");
+      const addedHashtags = newHashtags.filter((t: string) => !previousHashtags.includes(t));
+      if (addedHashtags.length > 0) {
+        const clientDisplayName = updatedClient?.companyName || updatedClient?.name || "A client";
+        try {
+          await sendToChannel("scheduling", {
+            type: "client_hashtags_added",
+            message: `:label: *${clientDisplayName}* — ${addedHashtags.length} new hashtag${addedHashtags.length === 1 ? "" : "s"} added: ${addedHashtags.map((t: string) => `\`${t}\``).join(", ")}`,
+            payload: { clientId: id, addedHashtags },
+          });
+        } catch (slackErr) {
+          console.error("[Client Update] Failed to send hashtag Slack notification:", slackErr);
+        }
+      }
+    }
+
+    // 🔥 Handle monthly deliverables
+    console.log("📦 Processing monthlyDeliverables:", monthlyDeliverables.length, "items");
+
+    const existing = await db.select().from(monthlyDeliverable).where(eq(monthlyDeliverable.clientId, id));
+
+    console.log("📦 Existing deliverables in DB:", existing.length, "items");
+
+    const existingIds = existing.map((d) => d.id);
+
+    // Filter out frontend-generated IDs (they start with "deliverable-")
+    const incomingDbIds = monthlyDeliverables
+      .map((d: any) => d.id)
+      .filter((deliverableId: string) => deliverableId && !deliverableId.startsWith("deliverable-"));
+
+    console.log("📦 Existing IDs:", existingIds);
+    console.log("📦 Incoming DB IDs:", incomingDbIds);
+
+    // Delete removed deliverables (ones that exist in DB but not in incoming)
+    const toDelete = existingIds.filter((existingId) => !incomingDbIds.includes(existingId));
+    console.log("🗑️ Deliverables to delete:", toDelete);
+
+    if (toDelete.length > 0) {
+      await db.delete(recurringTask).where(inArray(recurringTask.deliverableId, toDelete));
+      await db.delete(monthlyDeliverable).where(inArray(monthlyDeliverable.id, toDelete));
+    }
+
+    // Update or create deliverables
+    for (const d of monthlyDeliverables) {
+      const isExistingDbRecord = d.id && existingIds.includes(d.id);
+
+      if (isExistingDbRecord) {
+        // UPDATE existing deliverable
+        console.log("✏️ Updating deliverable:", d.id);
+        await db.update(monthlyDeliverable).set({
+          type: d.type,
+          quantity: d.quantity,
+          videosPerDay: d.videosPerDay || 1,
+          postingSchedule: d.postingSchedule,
+          postingDays: d.postingDays || [],
+          postingTimes: d.postingTimes || [],
+          platforms: d.platforms || [],
+          description: d.description || "",
+          isTrial: d.isTrial ?? false,
+          updatedAt: new Date().toISOString(),
+        }).where(eq(monthlyDeliverable.id, d.id));
+      } else {
+        // CREATE new deliverable (ignore frontend-generated ID, let DB generate one)
+        console.log("➕ Creating new deliverable:", d.type);
+        await db.insert(monthlyDeliverable).values({
+          id: createId(),
+          clientId: id,
+          type: d.type,
+          quantity: d.quantity,
+          videosPerDay: d.videosPerDay || 1,
+          postingSchedule: d.postingSchedule,
+          postingDays: d.postingDays || [],
+          postingTimes: d.postingTimes || [],
+          platforms: d.platforms || [],
+          description: d.description || "",
+          isTrial: d.isTrial ?? false,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 🔥 Handle one-off deliverables
+    console.log("📦 Processing oneOffDeliverables:", oneOffDeliverables.length, "items");
+
+    const existingOneOffs = await db.select().from(oneOffDeliverable).where(eq(oneOffDeliverable.clientId, id));
+
+    const existingOneOffIds = existingOneOffs.map((o) => o.id);
+
+    // Filter out temporary IDs (starting with "temp-")
+    const incomingOneOffDbIds = oneOffDeliverables
+      .map((o: any) => o.id)
+      .filter((oid: string) => oid && !oid.startsWith("temp-"));
+
+    // Delete removed one-offs
+    const toDeleteOneOffs = existingOneOffIds.filter((oid) => !incomingOneOffDbIds.includes(oid));
+
+    if (toDeleteOneOffs.length > 0) {
+      await db.delete(oneOffDeliverable).where(inArray(oneOffDeliverable.id, toDeleteOneOffs));
+    }
+
+    // Update or create one-offs
+    for (const o of oneOffDeliverables) {
+      const isExisting = o.id && existingOneOffIds.includes(o.id);
+
+      if (isExisting) {
+        await db.update(oneOffDeliverable).set({
+          type: o.type,
+          quantity: o.quantity,
+          videosPerDay: o.videosPerDay || 1,
+          postingSchedule: "one-off",
+          postingDays: o.postingDays || [],
+          postingTimes: o.postingTimes || [],
+          platforms: o.platforms || [],
+          description: o.description || "",
+          status: o.status || "PENDING",
+          updatedAt: new Date().toISOString(),
+        }).where(eq(oneOffDeliverable.id, o.id));
+      } else {
+        await db.insert(oneOffDeliverable).values({
+          id: createId(),
+          clientId: id,
+          type: o.type,
+          quantity: o.quantity,
+          videosPerDay: o.videosPerDay || 1,
+          postingSchedule: "one-off",
+          postingDays: o.postingDays || [],
+          postingTimes: o.postingTimes || [],
+          platforms: o.platforms || [],
+          description: o.description || "",
+          status: "PENDING",
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 🔥 Fetch the updated client with all relations to return
+    const finalClient = await db.query.client.findFirst({
+      where: eq(clientTable.id, id),
+      with: {
+        monthlyDeliverables: true,
+        oneOffDeliverables: true,
+        brandAssets: true,
+        recurringTasks: true,
+      },
+    });
+
+    console.log("✅ Client updated successfully with", finalClient?.monthlyDeliverables.length, "deliverables");
+
+    // 🔥 Audit client update (currentUser is already verified staff above —
+    // no need to re-decode the token here)
+    if (currentUser) {
+      try {
+        const { createAuditLog, AuditAction } = await import('@/lib/audit-logger');
+        await createAuditLog({
+          userId: currentUser.userId ?? currentUser.id,
+          action: AuditAction.CLIENT_UPDATED,
+          entity: "Client",
+          entityId: id,
+          details: `Updated client: ${name || companyName}`,
+          metadata: {
+            clientId: id,
+            updatedFields: Object.keys(data).filter(k => k !== 'monthlyDeliverables'),
+            deliverableChanges: {
+              added: monthlyDeliverables.filter((d: any) => !d.id || d.id.startsWith('deliverable-')).length,
+              deleted: toDelete.length
+            }
+          }
+        });
+      } catch { }
+    }
+
+    return NextResponse.json({
+      success: true,
+      updated: {
+        ...finalClient,
+        emails: additionalEmails,
+        phones: additionalPhones,
+      }
+    });
+  } catch (err) {
+    console.error("PUT client failed:", err);
+    return NextResponse.json({ message: "Server error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const db = getDbHttp();
+  try {
+    const { error, user: currentUser } = requireStaff(req);
+    if (error) return error;
+
+    const { id } = await params;
+
+    const tasksWithFiles = await db.select({ id: task.id }).from(task).where(eq(task.clientId, id));
+
+    const taskIds = tasksWithFiles.map(t => t.id);
+
+    if (taskIds.length > 0) {
+      await db.delete(fileTable).where(inArray(fileTable.taskId, taskIds));
+    }
+
+    await db.delete(recurringTask).where(eq(recurringTask.clientId, id));
+
+    await db.delete(monthlyRun).where(eq(monthlyRun.clientId, id));
+
+    const deliverables = await db.select({ id: monthlyDeliverable.id }).from(monthlyDeliverable).where(eq(monthlyDeliverable.clientId, id));
+
+    const deliverableIds = deliverables.map(d => d.id);
+
+    if (deliverableIds.length > 0) {
+      await db.delete(recurringTask).where(inArray(recurringTask.deliverableId, deliverableIds));
+      await db.delete(task).where(inArray(task.monthlyDeliverableId, deliverableIds));
+      await db.delete(monthlyDeliverable).where(inArray(monthlyDeliverable.id, deliverableIds));
+    }
+
+    await db.delete(oneOffDeliverable).where(eq(oneOffDeliverable.clientId, id));
+
+    await db.delete(brandAsset).where(eq(brandAsset.clientId, id));
+
+    await db.delete(task).where(eq(task.clientId, id));
+
+    const [deletedClient] = await db.delete(clientTable).where(eq(clientTable.id, id)).returning();
+
+    if (!deletedClient) {
+      return NextResponse.json({ message: "Client not found" }, { status: 404 });
+    }
+
+    // 🔥 Audit client deletion (currentUser is already verified staff above)
+    if (currentUser) {
+      try {
+        const { createAuditLog, AuditAction } = await import('@/lib/audit-logger');
+        await createAuditLog({
+          userId: currentUser.userId ?? currentUser.id,
+          action: AuditAction.CLIENT_DELETED,
+          entity: "Client",
+          entityId: id,
+          details: `Deleted client: ${deletedClient.name || deletedClient.companyName}`,
+          metadata: {
+            clientId: id,
+            clientName: deletedClient.name,
+            companyName: deletedClient.companyName,
+            tasksDeleted: taskIds.length,
+            deliverablesDeleted: deliverableIds.length
+          }
+        });
+      } catch { }
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Client deleted successfully',
+      deletedClient,
+    });
+
+  } catch (error: any) {
+    console.error('DELETE client failed:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to delete client',
+        details: error.message,
+        code: error.code
+      },
+      { status: 500 }
+    );
+  }
+}

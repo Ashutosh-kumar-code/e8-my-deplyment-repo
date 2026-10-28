@@ -1,0 +1,97 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786364352385,
+      "tag": "0000_sad_captain_cross",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787760000000,
+      "tag": "0001_split_rejected_statuses",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788768000000,
+      "tag": "0004_add_media_previews",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789243375954,
+      "tag": "0003_chemical_nemesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789660800000,
+      "tag": "0005_add_no_action_required",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789747200000,
+      "tag": "0006_add_equipment_reference_images",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790121600000,
+      "tag": "0007_add_drive_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790380800000,
+      "tag": "0008_remove_host_portal",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790467200000,
+      "tag": "0009_add_youtube_link_field",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790553600000,
+      "tag": "0010_add_upload_backend",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790639999000,
+      "tag": "0011_add_time_clock_entry",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790726400000,
+      "tag": "0012_add_host_role_and_shoot_host",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790812800000,
+      "tag": "0013_grant_host_role_to_admins",
+      "breakpoints": true
+    }
+  ]
+}

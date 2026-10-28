@@ -1,0 +1,281 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+import logo from "../../../public/assets/575743c7bd0af4189cb4a7349ecfe505c6699243.png";
+import { Eye, EyeOff, Check, X } from "lucide-react";
+import { PASSWORD_RULES, validatePassword, buildPasswordContext } from "@/lib/password-policy";
+
+export default function RegisterPage() {
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordTouched, setPasswordTouched] = useState(false);
+  const [acceptTerms, setAcceptTerms] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  // Invite flow: /register?invite=<token> (from the emailed link). The email
+  // and role are fixed by the invite; the user only adds their own details
+  // and password.
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteRole, setInviteRole] = useState<string | null>(null);
+  const [inviteChecked, setInviteChecked] = useState(false);
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("invite");
+    if (!token) {
+      setInviteChecked(true);
+      return;
+    }
+    fetch(`/api/invite/${encodeURIComponent(token)}`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.valid) {
+          const reasons: Record<string, string> = {
+            expired: "This invite link has expired. Ask your admin to send a new one.",
+            used: "This invite has already been used. Try signing in instead.",
+            revoked: "This invite was cancelled. Ask your admin for a new one.",
+          };
+          setError(reasons[data.reason] || "This invite link is not valid.");
+          return;
+        }
+        setInviteToken(token);
+        setInviteRole(data.role);
+        setEmail(data.email);
+        const [first, ...rest] = String(data.name || "").trim().split(/\s+/);
+        if (first) setFirstName(first);
+        if (rest.length) setLastName(rest.join(" "));
+      })
+      .catch(() => setError("Could not verify your invite link. Please try again."))
+      .finally(() => setInviteChecked(true));
+  }, []);
+
+  const passwordContext = useMemo(
+    () => buildPasswordContext({ email, firstName, lastName }),
+    [email, firstName, lastName]
+  );
+  const { valid: passwordValid, failedRuleIds } = useMemo(
+    () => validatePassword(password, passwordContext),
+    [password, passwordContext]
+  );
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordTouched(true);
+    setError("");
+    setSuccess("");
+
+    if (!passwordValid) {
+      setError("Please meet all password requirements before continuing.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const fullName = `${firstName} ${lastName}`.trim();
+
+      const res = await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: fullName,
+          email,
+          phone,
+          password,
+          acceptTerms,
+          ...(inviteToken ? { inviteToken } : {}),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.message || "Something went wrong");
+      } else {
+        setSuccess("Account created successfully! Redirecting...");
+        setTimeout(() => {
+          window.location.href = "/";
+        }, 1500);
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-50 px-4 sm:px-6">
+      <div className="w-full max-w-md space-y-6">
+
+        {/* Logo */}
+        <div className="flex justify-center">
+          <Image
+            src={logo}
+            alt="E8 Productions"
+            width={56}
+            height={56}
+            className="h-12 w-auto object-contain"
+          />
+        </div>
+
+        {/* Header */}
+        <div className="text-center">
+          <h1 className="text-3xl font-bold text-gray-900">Create an Account</h1>
+          <p className="text-gray-500 mt-2 text-sm">
+            {inviteRole
+              ? `You've been invited as ${inviteRole === "qc" ? "Quality Control" : inviteRole.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}. Set your password to get started.`
+              : "Join E8 Productions and get access to the E8 App"}
+          </p>
+        </div>
+
+      <form
+        onSubmit={handleRegister}
+        className="bg-white p-5 sm:p-6 rounded-xl shadow-md w-full"
+      >
+        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+        {success && <p className="text-green-500 text-sm mb-2">{success}</p>}
+
+        {/* First Name and Last Name Fields */}
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-3 sm:mb-4">
+          <div>
+            <label className="block text-xs sm:text-sm font-medium mb-1">First Name</label>
+            <input
+              type="text"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg p-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-primary"
+              placeholder="First name"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs sm:text-sm font-medium mb-1">Last Name</label>
+            <input
+              type="text"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg p-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-primary"
+              placeholder="Last name"
+              required
+            />
+          </div>
+        </div>
+
+        {/* Phone Field */}
+        <div className="mb-3 sm:mb-4">
+          <label className="block text-xs sm:text-sm font-medium mb-1">Phone Number</label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg p-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-primary"
+            placeholder="Enter your phone number"
+            required
+          />
+        </div>
+
+        {/* Email Field */}
+        <div className="mb-3 sm:mb-4">
+          <label className="block text-xs sm:text-sm font-medium mb-1">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            readOnly={!!inviteToken}
+            className={`w-full border border-gray-300 rounded-lg p-2 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-primary ${inviteToken ? "bg-gray-100 text-gray-600" : ""}`}
+            placeholder="Enter your email"
+            required
+          />
+        </div>
+
+        {/* Password Field */}
+        <div className="mb-2">
+          <label className="block text-xs sm:text-sm font-medium mb-1">Password</label>
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onBlur={() => setPasswordTouched(true)}
+              className="w-full border border-gray-300 rounded-lg p-2 pr-10 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-primary"
+              placeholder="Enter your password"
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              tabIndex={-1}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+
+          {/* Live password requirements checklist */}
+          {(passwordTouched || password.length > 0) && (
+            <ul className="mt-2 space-y-1">
+              {PASSWORD_RULES.map((rule) => {
+                const met = !failedRuleIds.includes(rule.id);
+                return (
+                  <li key={rule.id} className={`flex items-center gap-1.5 text-xs ${met ? "text-green-600" : "text-gray-400"}`}>
+                    {met ? <Check className="h-3 w-3 shrink-0" /> : <X className="h-3 w-3 shrink-0" />}
+                    {rule.label}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Terms Checkbox */}
+        <div className="flex items-start mb-4 sm:mb-5 mt-3">
+          <input
+            type="checkbox"
+            checked={acceptTerms}
+            onChange={(e) => setAcceptTerms(e.target.checked)}
+            className="mr-2 mt-0.5"
+            required
+          />
+          <span className="text-xs sm:text-sm">
+            I agree to the{" "}
+            <a href="/terms" className="text-primary underline hover:underline">
+              Terms and Conditions
+            </a>{" "}
+            and{" "}
+            <a href="/privacy" className="text-primary underline hover:underline">
+              Privacy Policy
+            </a>
+          </span>
+        </div>
+
+        {/* Submit Button */}
+        <button
+          type="submit"
+          disabled={loading || !inviteChecked}
+          className="w-full bg-primary text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg hover:bg-primary-dark transition disabled:opacity-60"
+        >
+          {loading ? "Registering..." : "Register"}
+        </button>
+      </form>
+
+        {/* Footer */}
+        <p className="text-center text-sm text-gray-500">
+          Already have an account?{" "}
+          <a href="/login" className="text-gray-900 font-medium hover:underline">
+            Sign in
+          </a>
+        </p>
+
+      </div>
+    </div>
+  );
+}

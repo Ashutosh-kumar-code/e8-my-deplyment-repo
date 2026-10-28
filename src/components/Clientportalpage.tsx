@@ -1,0 +1,1438 @@
+"use client";
+
+import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+  FileText,
+  CheckCircle2,
+  Clock,
+  Download,
+  Eye,
+  Loader2,
+  AlertCircle,
+  Search,
+  User,
+  Mail,
+  Phone,
+  Calendar,
+  CheckCircle,
+  XCircle,
+  CreditCard,
+  Receipt,
+  ExternalLink,
+  RefreshCw,
+  DollarSign,
+  FileSignature,
+  Package,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { formatPhone } from "@/lib/formatPhone";
+import { getPlatformMeta } from "./constants/platformIcons";
+import { ContractStatusBadge, SignerStatusBadge } from "./contracts/ContractStatusBadge";
+import { ContractDetailView } from "./contracts/ContractDetailView";
+import { toast } from "sonner";
+
+// Types
+interface MonthlyDeliverable {
+  id: string;
+  type: string;
+  quantity: number;
+  platforms?: string[];
+  description?: string;
+}
+
+interface ClientInfo {
+  id: string;
+  name: string;
+  companyName?: string;
+  email: string;
+  emails?: string[];
+  phone?: string;
+  phones?: string[];
+  hasPostingServices: boolean;
+  monthlyDeliverables: MonthlyDeliverable[];
+  billing?: {
+    monthlyFee: string;
+    billingFrequency: string;
+    billingDay: number;
+    nextBillingDate?: string;
+  };
+  createdAt: string;
+}
+
+interface Contract {
+  id: string;
+  title: string;
+  status: string;
+  requiresSignature?: boolean;
+  createdAt: string;
+  completedAt?: string;
+  signers: Array<{
+    id: string;
+    name: string;
+    email: string;
+    status: string;
+  }>;
+  createdBy?: {
+    name?: string;
+    email: string;
+  };
+}
+
+interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  status: string;
+  amount: number;
+  amountPaid: number;
+  currency: string;
+  dueDate: string | null;
+  description: string | null;
+  stripeHostedInvoiceUrl: string | null;
+  stripePdfUrl: string | null;
+  createdAt: string;
+  paidAt: string | null;
+}
+
+// Helpers
+function formatCurrency(amountInCents: number, currency: string = "usd"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency.toUpperCase(),
+  }).format(amountInCents / 100);
+}
+
+function formatDate(dateString: string | null | undefined): string {
+  if (!dateString) return "-";
+  return new Date(dateString).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+const invoiceStatusColors: Record<string, string> = {
+  DRAFT: "bg-gray-100 text-gray-800",
+  PENDING: "bg-yellow-100 text-yellow-800",
+  SENT: "bg-blue-100 text-blue-800",
+  PAID: "bg-green-100 text-green-800",
+  PARTIALLY_PAID: "bg-orange-100 text-orange-800",
+  OVERDUE: "bg-red-100 text-red-800",
+  CANCELED: "bg-gray-100 text-gray-600",
+};
+
+
+// ── Portal access status ──────────────────────────────────────────────────────
+interface PortalAccess {
+  status: string;
+  fullAccess: boolean;
+  locked: boolean;
+  forcePage: string | null;
+  message: string | null;
+  nextBillingDate: string | null;
+  lockedAt: string | null;
+}
+
+interface ClientPortalPageProps {
+  clientId?: string;
+}
+
+export function ClientPortalPage({ clientId: propClientId }: ClientPortalPageProps = {}) {
+  const searchParams = useSearchParams();
+  const urlClientId = propClientId || searchParams?.get("clientId") || undefined;
+  const [loading, setLoading] = useState(true);
+  const [clientInfo, setClientInfo] = useState<ClientInfo | null>(null);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [portalAccess, setPortalAccess] = useState<PortalAccess | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // Fetch all data
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      const clientUrl = `/api/client/me${urlClientId ? `?clientId=${urlClientId}` : ""}`;
+      
+      const contractsParam = urlClientId ? `clientId=${urlClientId}` : "";
+      const searchParam = searchQuery ? `search=${searchQuery}` : "";
+      const contractsQuery = [contractsParam, searchParam].filter(Boolean).join("&");
+      const contractsUrl = `/api/contracts${contractsQuery ? `?${contractsQuery}` : ""}`;
+      
+      const invoicesUrl = `/api/billing/invoices${urlClientId ? `?clientId=${urlClientId}` : ""}`;
+      const accessUrl = `/api/portal/access${urlClientId ? `?clientId=${urlClientId}` : ""}`;
+
+      // Fetch client info, contracts, invoices, and portal access in parallel
+      const [clientRes, contractsRes, invoicesRes, accessRes] = await Promise.all([
+        fetch(clientUrl, { credentials: "include" }),
+        fetch(contractsUrl, { credentials: "include" }),
+        fetch(invoicesUrl, { credentials: "include" }),
+        fetch(accessUrl, { credentials: "include" }),
+      ]);
+
+      if (clientRes.ok) {
+        const clientData = await clientRes.json();
+        setClientInfo(clientData.client || clientData);
+      }
+
+      if (contractsRes.ok) {
+        const contractsData = await contractsRes.json();
+        // Handle both array and { ok, contracts } response formats
+        setContracts(Array.isArray(contractsData) ? contractsData : contractsData.contracts || []);
+      }
+
+      if (invoicesRes.ok) {
+        const invoicesData = await invoicesRes.json();
+        setInvoices(invoicesData.invoices || []);
+      }
+
+      if (accessRes.ok) {
+        const accessData = await accessRes.json();
+        setPortalAccess(accessData);
+      }
+    } catch (err) {
+      console.error("Failed to fetch data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQuery, urlClientId]);
+
+  const handleSyncAll = async () => {
+    try {
+      setSyncing(true);
+      // 1. Sync Stripe billing data
+      const stripeRes = await fetch(`/api/billing/sync${urlClientId ? `?clientId=${urlClientId}` : ""}`, { credentials: "include" });
+      const stripeData = await stripeRes.json();
+      
+      // 2. Sync pending SignWell contracts
+      const pendingContracts = contracts.filter(c => c.status === "SENT" || c.status === "PARTIALLY_SIGNED");
+      if (pendingContracts.length > 0) {
+        await Promise.all(
+          pendingContracts.map(c =>
+            fetch(`/api/contracts/${c.id}/sync`, {
+              method: "POST",
+              credentials: "include",
+            }).catch(err => console.error(`Failed to sync contract ${c.id}:`, err))
+          )
+        );
+      }
+      
+      // 3. Reload data
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to sync payments and contracts:", err);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Handle returning from Stripe payment (Checkout fallback or hosted invoice return)
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const payment = urlParams.get("payment");
+    if (payment === "success") {
+      toast.success("Payment received — thank you!");
+      fetch("/api/portal/verify-payment")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.status === "ACTIVE") {
+            window.location.href = window.location.pathname;
+            return;
+          }
+          // Invoice-based clients: refresh local data / unlock state without requiring a subscription
+          fetchData();
+          window.history.replaceState({}, "", window.location.pathname);
+        })
+        .catch(() => {
+          fetchData();
+          window.history.replaceState({}, "", window.location.pathname);
+        });
+    } else if (payment === "canceled") {
+      toast.message("Payment canceled — you can pay anytime from your invoices.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Contract download
+  const handleDownload = async (contractId: string, type: "original" | "signed") => {
+    try {
+      const res = await fetch(`/api/contracts/${contractId}/download?type=${type}`, {
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        window.open(data.downloadUrl, "_blank");
+      }
+    } catch (err) {
+      console.error("Download failed:", err);
+    }
+  };
+
+  // Pay invoice — prefer Stripe hosted invoice link (same as email)
+  const handlePayInvoice = async (invoiceId: string) => {
+    try {
+      const res = await fetch(`/api/billing/invoices/${invoiceId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: "pay" }),
+      });
+
+      const data = await res.json();
+      const payUrl = data.payUrl || data.checkoutUrl || data.stripeHostedInvoiceUrl;
+      if (data.ok && payUrl) {
+        window.location.href = payUrl;
+        return;
+      }
+      toast.error(data.message || "Could not open payment page. Please try again.");
+    } catch (error) {
+      console.error("Failed to initiate payment:", error);
+      toast.error("Could not open payment page. Please try again.");
+    }
+  };
+
+  // If viewing a specific contract
+  if (selectedContractId) {
+    return (
+      <div className="space-y-6">
+        <ContractDetailView
+          contractId={selectedContractId}
+          onBack={() => {
+            setSelectedContractId(null);
+            fetchData();
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  // ── Portal lock gate ──────────────────────────────────────────────────────
+  // If the portal is locked (payment overdue) or in CONTRACT_PENDING /
+  // PAYMENT_PENDING, show only the contracts & billing section with a banner.
+  const isLocked = portalAccess && !portalAccess.fullAccess && (
+    portalAccess.forcePage === 'contracts' ||
+    portalAccess.forcePage === 'contracts-billing'
+  );
+
+  if (isLocked) {
+    // Categorize contracts and invoices for the locked view
+    const lockedNeedsAction = contracts.filter(
+      (c) => c.status === "SENT" || c.status === "PARTIALLY_SIGNED"
+    );
+    const lockedCompleted = contracts.filter((c) => c.status === "COMPLETED");
+    const lockedUnpaid = invoices.filter((inv) =>
+      ["SENT", "PENDING", "PARTIALLY_PAID", "OVERDUE"].includes(inv.status)
+    );
+
+    return (
+      <div className="space-y-6 pb-12">
+        {/* Lock banner */}
+        <div className={`rounded-xl px-6 py-4 flex items-center justify-between gap-4 border ${
+          portalAccess.status === 'LOCKED'
+            ? 'bg-red-50 border-red-200'
+            : 'bg-blue-50 border-blue-200'
+        }`}>
+          <div className="flex items-start gap-4">
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+              portalAccess.status === 'LOCKED' ? 'bg-red-100' : 'bg-blue-100'
+            }`}>
+              {portalAccess.status === 'LOCKED'
+                ? <CreditCard className="w-5 h-5 text-red-600" />
+                : <FileSignature className="w-5 h-5 text-blue-600" />
+              }
+            </div>
+            <div>
+              <p className={`font-semibold ${portalAccess.status === 'LOCKED' ? 'text-red-800' : 'text-blue-800'}`}>
+                {portalAccess.status === 'LOCKED'
+                  ? 'Portal locked — payment required'
+                  : portalAccess.status === 'CONTRACT_PENDING'
+                  ? 'One more step — please sign your contract'
+                  : 'Almost there — complete your first payment to unlock the portal'}
+              </p>
+              <p className={`text-sm mt-0.5 ${portalAccess.status === 'LOCKED' ? 'text-red-600' : 'text-blue-600'}`}>
+                {portalAccess.message}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSyncAll}
+            disabled={syncing}
+            className="flex-shrink-0 border-current hover:bg-black/5"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+            Sync Status
+          </Button>
+        </div>
+
+        {/* Contracts section */}
+        {(lockedNeedsAction.length > 0 || lockedCompleted.length > 0) && (
+          <section>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Contracts</h2>
+            <div className="space-y-3">
+              {[...lockedNeedsAction, ...lockedCompleted].map((contract) => (
+                <ContractCard
+                  key={contract.id}
+                  contract={contract}
+                  onDownload={handleDownload}
+                  onSelect={(id) => setSelectedContractId(id)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Invoices section */}
+        {(lockedUnpaid.length > 0 || invoices.length > 0) && (
+          <section>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Billing</h2>
+            <div className="space-y-3">
+              {(lockedUnpaid.length > 0 ? lockedUnpaid : invoices).map((inv) => (
+                <InvoiceCard
+                  key={inv.id}
+                  invoice={inv}
+                  onPay={handlePayInvoice}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {contracts.length === 0 && invoices.length === 0 && (
+          <div className="text-center py-16 text-gray-400">
+            <FileText className="w-10 h-10 mx-auto mb-3 opacity-40" />
+            <p>Your contract and invoice will appear here shortly.</p>
+            <p className="text-sm mt-1">The E8 team will be in touch soon.</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Categorize contracts — reference docs (Schedules A/B, the accepted Quote)
+  // don't require signature and get their own section, separate from signable
+  // contracts' Needs Action / Completed / Other buckets.
+  const referenceDocs = contracts.filter((c) => c.requiresSignature === false);
+  const signableContracts = contracts.filter((c) => c.requiresSignature !== false);
+  const needsAction = signableContracts.filter(
+    (c) => c.status === "SENT" || c.status === "PARTIALLY_SIGNED"
+  );
+  const completedContracts = signableContracts.filter((c) => c.status === "COMPLETED");
+  const otherContracts = signableContracts.filter(
+    (c) =>
+      c.status !== "SENT" &&
+      c.status !== "PARTIALLY_SIGNED" &&
+      c.status !== "COMPLETED"
+  );
+
+  // Categorize invoices
+  const unpaidInvoices = invoices.filter((inv) =>
+    ["SENT", "PENDING", "PARTIALLY_PAID", "OVERDUE"].includes(inv.status)
+  );
+  const paidInvoices = invoices.filter((inv) => inv.status === "PAID");
+
+  // Calculate total deliverables
+  const totalDeliverables = clientInfo?.monthlyDeliverables?.reduce(
+    (sum, d) => sum + d.quantity,
+    0
+  ) || 0;
+
+  return (
+    <div className="space-y-12 pb-12">
+      {/* ===== SECTION 1: CLIENT INFO (redesigned) ===== */}
+      <section>
+        <PageHeader
+          title={
+            <span className="flex items-center gap-2">
+              <User className="h-6 w-6 text-blue-600" />
+              Welcome Back
+            </span>
+          }
+          description="View your account details, contracts, and invoices"
+        />
+
+        {clientInfo ? (
+          <div className="space-y-5">
+            {/* Default stretch alignment keeps both cards the same height. The dead
+                space this used to cause is gone now that the account column is a
+                compact list rather than a stack of nested cards. */}
+            <div className="grid lg:grid-cols-[340px_1fr] gap-5">
+              {/* Account Info — headings follow the app's CardTitle convention
+                  (text-lg, sentence case) rather than the letterspaced uppercase
+                  micro-labels this page used to carry. Those were drawn for a
+                  monospace face and read as stretched now that everything is Inter. */}
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <h4 className="text-lg font-semibold text-gray-900">Account</h4>
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground bg-gray-100 border border-gray-200 rounded-full px-2.5 py-1">
+                    {clientInfo.hasPostingServices ? (
+                      <CheckCircle size={12} className="text-green-600 shrink-0" strokeWidth={2} />
+                    ) : (
+                      <XCircle size={12} className="text-gray-400 shrink-0" strokeWidth={2} />
+                    )}
+                    {clientInfo.hasPostingServices ? "Posting Included" : "Delivery Only"}
+                  </span>
+                </div>
+
+                {/* A plain divided list rather than a stack of nested cards — cards
+                    inside a card read as heavier than the information warrants.
+                    No name/avatar row here: the header already shows who you're
+                    signed in as, so repeating it is noise. */}
+                <div className="divide-y divide-gray-100">
+
+                  {/* Tinted icon tiles, the app's standard treatment for detail rows
+                      (see SalesDashboard).
+                      `label` is only set where the value can't speak for itself — an
+                      address and a phone number are obvious from the icon, a bare
+                      date isn't. */}
+                  {[
+                    {
+                      key: "email",
+                      label: null,
+                      Icon: Mail,
+                      tint: "bg-blue-50 text-blue-600",
+                      value: clientInfo.email,
+                    },
+                    ...(clientInfo.phone
+                      ? [
+                          {
+                            key: "phone",
+                            label: null,
+                            Icon: Phone,
+                            tint: "bg-green-50 text-green-600",
+                            value: formatPhone(clientInfo.phone),
+                          },
+                        ]
+                      : []),
+                    {
+                      key: "since",
+                      label: "Client since",
+                      Icon: Calendar,
+                      tint: "bg-purple-50 text-purple-600",
+                      value: formatDate(clientInfo.createdAt),
+                    },
+                  ].map(({ key, label, Icon, tint, value }) => (
+                    <div key={key} className="flex items-center gap-3 py-3 first:pt-0">
+                      <div className={`p-2 rounded-lg shrink-0 ${tint}`}>
+                        <Icon className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-gray-900 text-[15px] leading-tight truncate">
+                          {value}
+                        </p>
+                        {label && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">{label}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Monthly Deliverables */}
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <h4 className="text-lg font-semibold text-gray-900">Monthly Deliverables</h4>
+                  {/* Mirrors the per-card values: purple semibold figure, muted
+                      unit, and the same "/mo" spacing rather than " / mo". */}
+                  <span className="text-xs text-muted-foreground bg-gray-100 border border-gray-200 rounded-full px-2.5 py-1">
+                    <span className="font-semibold text-purple-600 tabular-nums">
+                      {totalDeliverables}
+                    </span>
+                    <span> Total/Mo</span>
+                  </span>
+                </div>
+
+                {clientInfo.monthlyDeliverables?.length > 0 ? (
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {clientInfo.monthlyDeliverables.map((deliverable) => {
+                      const platforms = deliverable.platforms ?? [];
+
+                      return (
+                        <div
+                          key={deliverable.id}
+                          className="flex items-center gap-4 rounded-lg border border-gray-200 bg-white px-4 py-4"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-gray-900 text-[15px] leading-tight truncate">
+                              {deliverable.type}
+                            </p>
+                            {platforms.length > 0 && (
+                              <div className="mt-1.5 flex gap-1 flex-wrap">
+                                {platforms.map((platform) => {
+                                  const meta = getPlatformMeta(platform);
+
+                                  return (
+                                    <span
+                                      key={platform}
+                                      title={meta?.label ?? platform}
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-gray-50"
+                                    >
+                                      {meta ? (
+                                        <meta.Icon
+                                          className={`h-3.5 w-3.5 ${meta.color}`}
+                                          aria-label={meta.label}
+                                        />
+                                      ) : (
+                                        // Unknown platform — fall back to text rather than
+                                        // showing nothing at all.
+                                        <span className="text-[9px] uppercase text-[#6B6A63]">
+                                          {platform.slice(0, 2)}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                          {/* Quantity and unit are set at the same size so "30/mo"
+                              reads as one value instead of a big number with a
+                              footnote. Weight and color carry the emphasis instead. */}
+                          <div className="text-right shrink-0">
+                            <span className="text-xl font-semibold text-purple-600 tabular-nums">
+                              {deliverable.quantity}
+                            </span>
+                            <span className="text-xl text-[#6B6A63]">/mo</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-[#6B6A63]">
+                    <Package className="h-10 w-10 mx-auto mb-3 opacity-30" />
+                    <p className="text-sm">No deliverables configured yet</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Billing Summary */}
+            {clientInfo.billing?.monthlyFee && (
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 rounded-xl shrink-0 bg-green-50 text-green-600">
+                      <DollarSign className="h-6 w-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-lg font-semibold text-gray-900">Monthly Fee</h4>
+                      <p className="mt-0.5 text-2xl font-bold tracking-tight text-gray-900">
+                        ${parseFloat(clientInfo.billing.monthlyFee.replace(/[^0-9.]/g, "")).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <h4 className="text-lg font-semibold text-gray-900">Billing Cycle</h4>
+                    <p className="mt-0.5 font-medium text-gray-900 capitalize">
+                      {clientInfo.billing.billingFrequency || "Monthly"}
+                    </p>
+                    {clientInfo.billing.billingDay && (
+                      <p className="text-xs text-muted-foreground">
+                        Day {clientInfo.billing.billingDay} of each month
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="py-12 text-center text-gray-500">
+              <User className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+              <p>Unable to load account information</p>
+            </CardContent>
+          </Card>
+        )}
+      </section>
+
+      <Separator />
+
+      {/* ===== SECTION 2: CONTRACTS ===== */}
+      <section>
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-6">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
+              <FileSignature className="h-6 w-6 text-blue-600" />
+              My Contracts
+            </h2>
+            <p className="text-muted-foreground mt-1">
+              Review and sign your legal documents
+            </p>
+          </div>
+
+          <div className="relative w-full md:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search contracts..."
+              className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white shadow-sm"
+            />
+          </div>
+        </div>
+
+        {/* Subscription setup CTA — shows when portal status is PAYMENT_PENDING */}
+        {portalAccess?.status === 'PAYMENT_PENDING' && (
+          <div className="mb-6 bg-green-50 border border-green-200 rounded-xl px-6 py-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <CreditCard className="w-5 h-5 text-green-600" />
+              </div>
+              <div>
+                <p className="font-semibold text-green-900">Contract signed — set up your monthly payment</p>
+                <p className="text-sm text-green-700 mt-0.5">Complete your first payment to unlock your full portal.</p>
+              </div>
+            </div>
+            <Button
+              className="bg-green-600 hover:bg-green-700 text-white flex-shrink-0"
+              onClick={async () => {
+                const res = await fetch('/api/portal/setup-subscription', {
+                  method: 'POST', credentials: 'include',
+                });
+                const data = await res.json();
+                if (data.checkoutUrl) window.location.href = data.checkoutUrl;
+                else alert(data.error || 'Something went wrong');
+              }}
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              Set Up Payment
+            </Button>
+          </div>
+        )}
+
+        {contracts.length === 0 ? (
+          <div className="text-center py-16 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
+            <FileText className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-gray-600 mb-1">
+              No contracts yet
+            </h3>
+            <p className="text-sm text-gray-400">
+              You'll see contracts here when they are sent to you
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-8">
+            {/* Needs Action */}
+            {needsAction.length > 0 && (
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <div className="p-1.5 bg-amber-100 rounded-md">
+                    <AlertCircle className="h-4 w-4 text-amber-600" />
+                  </div>
+                  Needs Your Signature ({needsAction.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {needsAction.map((contract) => (
+                    <ContractCard
+                      key={contract.id}
+                      contract={contract}
+                      onDownload={handleDownload}
+                      onSelect={(id) => setSelectedContractId(id)}
+                      showSignButton
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Completed */}
+            {completedContracts.length > 0 && (
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <div className="p-1.5 bg-green-100 rounded-md">
+                    <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  </div>
+                  Completed ({completedContracts.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {completedContracts.map((contract) => (
+                    <ContractCard
+                      key={contract.id}
+                      contract={contract}
+                      onDownload={handleDownload}
+                      onSelect={(id) => setSelectedContractId(id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Other */}
+            {otherContracts.length > 0 && (
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4">
+                  Other ({otherContracts.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {otherContracts.map((contract) => (
+                    <ContractCard
+                      key={contract.id}
+                      contract={contract}
+                      onDownload={handleDownload}
+                      onSelect={(id) => setSelectedContractId(id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Reference Documents — Schedules A/B, accepted Quote: no signature needed */}
+            {referenceDocs.length > 0 && (
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <div className="p-1.5 bg-gray-100 rounded-md">
+                    <FileText className="h-4 w-4 text-gray-500" />
+                  </div>
+                  Reference Documents ({referenceDocs.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {referenceDocs.map((contract) => (
+                    <ContractCard
+                      key={contract.id}
+                      contract={contract}
+                      onDownload={handleDownload}
+                      onSelect={(id) => setSelectedContractId(id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <Separator />
+
+      {/* ===== SECTION 3: INVOICES ===== */}
+      <section>
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
+              <Receipt className="h-6 w-6 text-green-600" />
+              Invoices & Payments
+            </h2>
+            <p className="text-muted-foreground mt-1">
+              View and pay your invoices
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={handleSyncAll} disabled={syncing}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+            Sync & Refresh
+          </Button>
+        </div>
+
+        {/* Unpaid Invoices */}
+        {unpaidInvoices.length > 0 && (
+          <Card className="mb-6 border-amber-200 bg-amber-50/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2 text-amber-800">
+                <AlertCircle className="h-5 w-5" />
+                Pending Payment ({unpaidInvoices.length})
+              </CardTitle>
+              <CardDescription className="text-amber-700">
+                You have {unpaidInvoices.length} invoice
+                {unpaidInvoices.length > 1 ? "s" : ""} awaiting payment
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {unpaidInvoices.map((invoice) => (
+                  <div
+                    key={invoice.id}
+                    className="flex items-center justify-between p-4 bg-white rounded-lg border shadow-sm"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="p-2.5 bg-amber-100 rounded-lg">
+                        <FileText className="h-5 w-5 text-amber-600" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">
+                          {invoice.invoiceNumber}
+                        </p>
+                        <p className="text-sm text-gray-500 line-clamp-1 max-w-md">
+                          {invoice.description || "Invoice"}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          Due: {formatDate(invoice.dueDate)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <p className="text-xl font-bold text-gray-900">
+                          {formatCurrency(invoice.amount - invoice.amountPaid, invoice.currency)}
+                        </p>
+                        <Badge className={invoiceStatusColors[invoice.status]}>
+                          {invoice.status === "OVERDUE" ? "Overdue" : "Due"}
+                        </Badge>
+                      </div>
+                      <div className="flex gap-2">
+                        {invoice.stripePdfUrl && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => window.open(invoice.stripePdfUrl!, "_blank")}
+                            title="Download PDF"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={() => handlePayInvoice(invoice.id)}
+                        >
+                          <CreditCard className="h-4 w-4 mr-2" />
+                          Pay Now
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Invoice History */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <CheckCircle className="h-5 w-5 text-green-600" />
+              Payment History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {paidInvoices.length > 0 ? (
+              <div className="space-y-2">
+                {paidInvoices.map((invoice) => (
+                  <div
+                    key={invoice.id}
+                    className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <CheckCircle className="h-5 w-5 text-green-600" />
+                      <div>
+                        <p className="font-medium text-gray-900">
+                          {invoice.invoiceNumber}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Paid on {formatDate(invoice.paidAt)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <p className="font-semibold text-gray-900">
+                        {formatCurrency(invoice.amount, invoice.currency)}
+                      </p>
+                      {invoice.stripePdfUrl && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => window.open(invoice.stripePdfUrl!, "_blank")}
+                        >
+                          <Download className="h-4 w-4 mr-2" />
+                          Receipt
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-12 text-gray-500">
+                <Receipt className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+                <p>No payment history yet</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* No invoices at all */}
+        {invoices.length === 0 && (
+          <div className="text-center py-16 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200 mt-6">
+            <Receipt className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-gray-600 mb-1">
+              No invoices yet
+            </h3>
+            <p className="text-sm text-gray-400 max-w-sm mx-auto">
+              When an invoice is ready, it will show up here and in your email. Use Pay Now to pay securely.
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* ===== SECTION 4: ONBOARDING INTAKE (Phase 5 — shown after payment) ===== */}
+      {/* {portalAccess?.fullAccess && (
+        <>
+          <Separator />
+          <IntakeFormSection />
+        </>
+      )} */}
+    </div>
+  );
+}
+
+// Contract Card Component (same as before)
+function ContractCard({
+  contract,
+  onDownload,
+  onSelect,
+  showSignButton,
+}: {
+  contract: Contract;
+  onDownload: (id: string, type: "original" | "signed") => void;
+  onSelect: (id: string) => void;
+  showSignButton?: boolean;
+}) {
+  const isReference = contract.requiresSignature === false;
+  return (
+    <div
+      className="bg-white rounded-xl border border-gray-200 p-5 hover:border-blue-300 hover:shadow-md transition-all cursor-pointer group"
+      onClick={() => onSelect(contract.id)}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-blue-50 rounded-lg group-hover:bg-blue-100 transition-colors">
+            <FileText className="h-5 w-5 text-blue-600" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
+              {contract.title}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              From {contract.createdBy?.name || contract.createdBy?.email} •{" "}
+              {new Date(contract.createdAt).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isReference ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+              Reference
+            </span>
+          ) : (
+            <ContractStatusBadge status={contract.status} />
+          )}
+        </div>
+      </div>
+
+      {/* Signers Preview */}
+      {isReference ? (
+        <p className="mt-4 text-xs text-gray-400">No signature required</p>
+      ) : (
+      <div className="mt-4 flex items-center gap-2 flex-wrap">
+        {contract.signers?.map((signer) => (
+          <div
+            key={signer.id}
+            className="inline-flex items-center gap-1.5 bg-gray-50 rounded-full px-2.5 py-1 border border-gray-100"
+          >
+            <div
+              className={`w-5 h-5 rounded-full text-[9px] font-bold flex items-center justify-center ${
+                signer.status === "SIGNED"
+                  ? "bg-green-100 text-green-700"
+                  : "bg-gray-200 text-gray-600"
+              }`}
+            >
+              {signer.name?.[0]?.toUpperCase()}
+            </div>
+            <span className="text-xs text-gray-600">{signer.name}</span>
+            <SignerStatusBadge status={signer.status} />
+          </div>
+        ))}
+      </div>
+      )}
+
+      {/* Actions */}
+      <div className="mt-5 flex items-center gap-2 pt-4 border-t border-gray-50">
+        {showSignButton && !isReference ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(contract.id);
+            }}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+          >
+            ✍️ Review & Sign
+          </button>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(contract.id);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 rounded-lg border border-gray-200 transition-colors"
+          >
+            <Eye className="h-3.5 w-3.5" />
+            View Details
+          </button>
+        )}
+
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload(contract.id, !isReference && contract.status === "COMPLETED" ? "signed" : "original");
+          }}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 rounded-lg transition-colors ml-auto"
+        >
+          <Download className="h-3.5 w-3.5" />
+          PDF
+        </button>
+      </div>
+    </div>
+  );
+}
+// ── InvoiceCard component (used in locked view) ───────────────────────────────
+function InvoiceCard({ invoice, onPay }: { invoice: any; onPay: (id: string) => void }) {
+  return (
+    <div className="flex items-center justify-between p-4 bg-white rounded-lg border shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="p-2 bg-amber-100 rounded-lg">
+          <Receipt className="h-4 w-4 text-amber-600" />
+        </div>
+        <div>
+          <p className="font-semibold text-gray-900 text-sm">{invoice.invoiceNumber}</p>
+          <p className="text-xs text-gray-500">{invoice.description || 'Monthly service'}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <p className="font-bold text-gray-900">
+          ${((invoice.amount - invoice.amountPaid) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+        </p>
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => onPay(invoice.id)}>
+          <CreditCard className="h-3.5 w-3.5 mr-1" /> Pay
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ── Intake Form Section (Phase 4 — shown after portal is fully unlocked) ──────
+const LOOM_URL = process.env.NEXT_PUBLIC_LOOM_ONBOARDING_URL || '';
+
+function IntakeFormSection() {
+  const [status, setStatus] = React.useState<'loading' | 'completed' | 'form' | 'success'>('loading');
+  const [showVideo, setShowVideo] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [form, setForm] = React.useState({
+    brandColors: '',
+    brandFonts: '',
+    brandVoice: '',
+    brandGuidelines: '',
+    logoUrl: '',
+    platforms: [] as string[],
+    contentNiche: '',
+    targetAudience: '',
+    contentStyle: 'mixed',
+    topicsToAvoid: '',
+    competitorChannels: '',
+    preferredPostingDays: [] as string[],
+    primaryContactName: '',
+    primaryContactEmail: '',
+    primaryContactPhone: '',
+    additionalNotes: '',
+    hashtags: [] as string[],
+  });
+  const [hashtagInput, setHashtagInput] = React.useState('');
+
+  React.useEffect(() => {
+    fetch('/api/portal/intake', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        setStatus(d.completed ? 'completed' : 'form');
+        if (Array.isArray(d.hashtags)) setForm(p => ({ ...p, hashtags: d.hashtags }));
+      })
+      .catch(() => setStatus('form'));
+  }, []);
+
+  function addHashtag() {
+    const raw = hashtagInput.trim().replace(/^#/, '');
+    if (!raw) return;
+    const tag = `#${raw}`;
+    if (!form.hashtags.includes(tag)) {
+      setForm(p => ({ ...p, hashtags: [...p.hashtags, tag] }));
+    }
+    setHashtagInput('');
+  }
+
+  function removeHashtag(tag: string) {
+    setForm(p => ({ ...p, hashtags: p.hashtags.filter(h => h !== tag) }));
+  }
+
+  async function handleSubmit() {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/portal/intake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          ...form,
+          brandColors: form.brandColors.split(',').map(s => s.trim()).filter(Boolean),
+          brandFonts: form.brandFonts.split(',').map(s => s.trim()).filter(Boolean),
+          hashtags: form.hashtags,
+        }),
+      });
+      if (res.ok) setStatus('success');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const platforms = ['YouTube', 'TikTok', 'Instagram', 'Facebook', 'LinkedIn'];
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+  function toggleArr(arr: string[], val: string) {
+    return arr.includes(val) ? arr.filter(v => v !== val) : [...arr, val];
+  }
+
+  if (status === 'loading') return null;
+
+  if (status === 'completed' || status === 'success') {
+    return (
+      <section>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-gray-900">Onboarding</h2>
+        </div>
+        <div className="bg-green-50 border border-green-200 rounded-xl px-6 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0" />
+            <div>
+              <p className="font-semibold text-green-900">Intake form submitted</p>
+              <p className="text-sm text-green-700">Your team has everything they need to get started.</p>
+            </div>
+          </div>
+          {LOOM_URL && (
+            <Button variant="outline" size="sm" onClick={() => setShowVideo(true)}>
+              Re-watch welcome video
+            </Button>
+          )}
+        </div>
+        {showVideo && LOOM_URL && (
+          <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-3xl">
+              <div className="relative pb-[56.25%] h-0 rounded-xl overflow-hidden">
+                <iframe
+                  src={`${LOOM_URL}?autoplay=1`}
+                  className="absolute inset-0 w-full h-full"
+                  allowFullScreen allow="autoplay; fullscreen"
+                />
+              </div>
+              <button
+                onClick={() => setShowVideo(false)}
+                className="mt-4 text-white/70 hover:text-white text-sm mx-auto block"
+              >
+                Close ✕
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">Onboarding Intake</h2>
+        <p className="text-gray-500 mt-1">Help us understand your brand so we can hit the ground running.</p>
+      </div>
+
+      <div className="space-y-6 max-w-2xl">
+        {/* Brand */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <h3 className="font-semibold text-gray-900">Brand</h3>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Brand colors (comma-separated hex codes)</label>
+            <input type="text" value={form.brandColors} onChange={e => setForm(p => ({ ...p, brandColors: e.target.value }))}
+              placeholder="#000000, #ffffff" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Fonts (comma-separated)</label>
+            <input type="text" value={form.brandFonts} onChange={e => setForm(p => ({ ...p, brandFonts: e.target.value }))}
+              placeholder="Montserrat, Open Sans" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Brand voice / tone</label>
+            <textarea value={form.brandVoice} onChange={e => setForm(p => ({ ...p, brandVoice: e.target.value }))}
+              rows={2} placeholder="Professional but approachable, educational, witty..."
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Logo URL or Drive link</label>
+            <input type="text" value={form.logoUrl} onChange={e => setForm(p => ({ ...p, logoUrl: e.target.value }))}
+              placeholder="https://drive.google.com/..." className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+
+        {/* Platforms */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <h3 className="font-semibold text-gray-900">Platforms</h3>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-2 block">Which platforms are we posting to?</label>
+            <div className="flex flex-wrap gap-2">
+              {platforms.map(p => (
+                <button key={p}
+                  onClick={() => setForm(f => ({ ...f, platforms: toggleArr(f.platforms, p) }))}
+                  className={`px-3 py-1.5 text-sm rounded-full border font-medium transition ${
+                    form.platforms.includes(p)
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                  }`}
+                >{p}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <h3 className="font-semibold text-gray-900">Content</h3>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Content niche / industry</label>
+            <input type="text" value={form.contentNiche} onChange={e => setForm(p => ({ ...p, contentNiche: e.target.value }))}
+              placeholder="e.g. Fitness, SaaS, Real Estate..." className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Target audience</label>
+            <textarea value={form.targetAudience} onChange={e => setForm(p => ({ ...p, targetAudience: e.target.value }))}
+              rows={2} placeholder="Age, demographics, interests, pain points..."
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Topics to avoid</label>
+            <textarea value={form.topicsToAvoid} onChange={e => setForm(p => ({ ...p, topicsToAvoid: e.target.value }))}
+              rows={2} placeholder="Politics, competitors by name, sensitive topics..."
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Competitor channels (for reference)</label>
+            <input type="text" value={form.competitorChannels} onChange={e => setForm(p => ({ ...p, competitorChannels: e.target.value }))}
+              placeholder="@channel1, @channel2" className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+
+        {/* Hashtags */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <div>
+            <h3 className="font-semibold text-gray-900">Template hashtags</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Hashtags you'd like used on your posts. Your account manager may have already added some — feel free to add more.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={hashtagInput}
+              onChange={e => setHashtagInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addHashtag(); } }}
+              placeholder="e.g. contentcreation"
+              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <Button type="button" variant="outline" onClick={addHashtag}>Add</Button>
+          </div>
+          {form.hashtags.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {form.hashtags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-sm rounded-full bg-blue-50 text-blue-700 border border-blue-200"
+                >
+                  {tag}
+                  <button type="button" onClick={() => removeHashtag(tag)} className="text-blue-400 hover:text-blue-700">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Scheduling */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <h3 className="font-semibold text-gray-900">Posting preferences</h3>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-2 block">Preferred posting days</label>
+            <div className="flex flex-wrap gap-2">
+              {days.map(d => (
+                <button key={d}
+                  onClick={() => setForm(f => ({ ...f, preferredPostingDays: toggleArr(f.preferredPostingDays, d) }))}
+                  className={`px-3 py-1.5 text-sm rounded-full border font-medium transition ${
+                    form.preferredPostingDays.includes(d)
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                  }`}
+                >{d.slice(0, 3)}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Contact */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6 space-y-4">
+          <h3 className="font-semibold text-gray-900">Primary point of contact</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium text-gray-700 mb-1 block">Name</label>
+              <input type="text" value={form.primaryContactName} onChange={e => setForm(p => ({ ...p, primaryContactName: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-700 mb-1 block">Email</label>
+              <input type="email" value={form.primaryContactEmail} onChange={e => setForm(p => ({ ...p, primaryContactEmail: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-1 block">Phone</label>
+            <input type="tel" value={form.primaryContactPhone} onChange={e => setForm(p => ({ ...p, primaryContactPhone: e.target.value }))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        </div>
+
+        {/* Additional */}
+        <div className="bg-white border border-gray-200 rounded-xl p-6">
+          <label className="text-sm font-medium text-gray-700 mb-1 block">Anything else we should know?</label>
+          <textarea value={form.additionalNotes} onChange={e => setForm(p => ({ ...p, additionalNotes: e.target.value }))}
+            rows={3} placeholder="Special requests, timelines, brand history..."
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        <Button
+          onClick={handleSubmit}
+          disabled={saving}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 text-base"
+        >
+          {saving ? 'Submitting...' : 'Submit Intake Form →'}
+        </Button>
+      </div>
+    </section>
+  );
+}

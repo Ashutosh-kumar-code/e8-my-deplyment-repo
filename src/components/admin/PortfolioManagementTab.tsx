@@ -1,0 +1,2698 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { persistReorder } from "@/lib/portfolio-reorder";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { PageHeader } from "../ui/page-header";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Textarea } from "../ui/textarea";
+import { Badge } from "../ui/badge";
+import { Switch } from "../ui/switch";
+import { Checkbox } from "../ui/checkbox";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "../ui/select";
+import { FilterSelect } from "../ui/filter-select";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "../ui/dialog";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "../ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import PortfolioJourneyManager from "./PortfolioJourneyManager";
+import {
+    Plus,
+    Video,
+    Edit,
+    Trash2,
+    Loader2,
+    Download,
+    Users,
+    Film,
+    Eye,
+    EyeOff,
+    GripVertical,
+    ArrowUp,
+    ArrowDown,
+    Search,
+    RefreshCw,
+    Image as ImageIcon,
+    ExternalLink,
+    BarChart3,
+    Clock,
+    Mail,
+    Phone,
+    Briefcase,
+    ChevronLeft,
+    ChevronRight,
+    Play,
+    Settings as SettingsIcon,
+    Upload,
+} from "lucide-react";
+import { toast } from "sonner";
+import { formatPhone } from "@/lib/formatPhone";
+
+/* ───────────────────────── types ───────────────────────────── */
+interface PortfolioLead {
+    id: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
+    email: string;
+    serviceNeeded: string;
+    ipAddress?: string; // Optional field
+    createdAt: string;
+}
+
+interface PortfolioVideo {
+    id: string;
+    title: string;
+    description: string;
+    videoUrl: string;
+    thumbnailUrl: string | null;
+    category: string;
+    order: number;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+interface Subcategory {
+    key: string;
+    label: string;
+    icon: string;
+    isActive: boolean;
+}
+
+interface Category {
+    key: string;
+    label: string;
+    icon: string;
+    isActive: boolean;
+    subcategories: Subcategory[];
+}
+
+const SERVICE_OPTIONS = [
+    "Videography",
+    "Video Editing",
+    "Build A Show",
+    "Social Media Management",
+    "Multiple Services",
+    "Other",
+];
+
+const LEADS_PER_PAGE = 15;
+
+// This subcategory renders channel cards (name/avatar/follower count)
+// instead of videos — managed separately in ChannelControl below.
+const CHANNEL_CATEGORY_KEY = "who-we-work-with";
+
+// Photography section has no subcategories — images use this category key.
+const PHOTOGRAPHY_CATEGORY_KEY = "photography";
+
+// Short-form video carousel on the public homepage (below "What E8 Does").
+// Not part of the /portfolio sections hierarchy — managed as its own
+// standalone tab so it can't collide with portfolio-page categories.
+// Kept in sync manually with HOME_CAROUSEL_CATEGORY_KEY in
+// src/components/landing/HomeVideoCarousel.tsx.
+const HOME_CAROUSEL_CATEGORY_KEY = "home-video-carousel";
+
+interface PortfolioImage {
+    id: string;
+    title: string;
+    description: string;
+    imageUrl: string;
+    thumbnailUrl: string | null;
+    category: string;
+    order: number;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LEAD MANAGEMENT TAB
+   ═══════════════════════════════════════════════════════════════ */
+function LeadManagement() {
+    const [leads, setLeads] = useState<PortfolioLead[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [serviceFilter, setServiceFilter] = useState("all");
+    const [searchQuery, setSearchQuery] = useState("");
+    const [currentPage, setCurrentPage] = useState(1);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [deleting, setDeleting] = useState(false);
+
+    const fetchLeads = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch("/api/portfolio/leads");
+            const data = await res.json();
+            if (data.ok) setLeads(data.leads || []);
+            else toast.error("Failed to load leads");
+        } catch {
+            toast.error("Network error loading leads");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchLeads();
+    }, [fetchLeads]);
+
+    // Filter logic
+    const filtered = leads.filter((lead) => {
+        const matchesService =
+            serviceFilter === "all" || lead.serviceNeeded === serviceFilter;
+        const matchesSearch =
+            !searchQuery ||
+            // Both raw and formatted, so "8088958905" and "(808)" both match.
+            `${lead.firstName} ${lead.lastName} ${lead.email} ${lead.phone} ${formatPhone(lead.phone)}`
+                .toLowerCase()
+                .includes(searchQuery.toLowerCase());
+        return matchesService && matchesSearch;
+    });
+
+    // Pagination
+    const totalPages = Math.ceil(filtered.length / LEADS_PER_PAGE);
+    const paginatedLeads = filtered.slice(
+        (currentPage - 1) * LEADS_PER_PAGE,
+        currentPage * LEADS_PER_PAGE
+    );
+
+    // CSV Export
+    const exportCSV = () => {
+        const headers = [
+            "First Name",
+            "Last Name",
+            "Email",
+            "Phone",
+            "Service Needed",
+            "Submitted At",
+        ];
+        const rows = filtered.map((l) => [
+            l.firstName,
+            l.lastName,
+            l.email,
+            l.phone,
+            l.serviceNeeded,
+            new Date(l.createdAt).toLocaleString(),
+        ]);
+        // Lead data comes from the public form, so neutralise spreadsheet formulas (=, +, -, @)
+        // and escape embedded quotes — a name like `=HYPERLINK(...)` would otherwise run in Excel.
+        const cell = (v: unknown) => {
+            let str = v == null ? "" : String(v);
+            if (/^[=+\-@\t\r]/.test(str)) str = `'${str}`;
+            return `"${str.replace(/"/g, '""')}"`;
+        };
+        const csv = "\uFEFF" + [headers, ...rows].map((r) => r.map(cell).join(",")).join("\r\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `portfolio-leads-${new Date().toISOString().split("T")[0]}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast.success(`Exported ${filtered.length} leads to CSV`);
+    };
+
+    const deleteLeads = async (ids: string[]) => {
+        if (ids.length === 0) return;
+        if (!confirm(`Delete ${ids.length} lead${ids.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
+        setDeleting(true);
+        try {
+            const res = await fetch("/api/portfolio/leads", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.message || "Delete failed");
+            toast.success(`Deleted ${data.deleted} lead${data.deleted !== 1 ? "s" : ""}`);
+            setSelectedIds((prev) => {
+                const next = new Set(prev);
+                ids.forEach((id) => next.delete(id));
+                return next;
+            });
+            fetchLeads();
+        } catch (err: any) {
+            toast.error(err.message || "Delete failed");
+        } finally {
+            setDeleting(false);
+        }
+    };
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const allPageSelected = paginatedLeads.length > 0 && paginatedLeads.every((l) => selectedIds.has(l.id));
+
+    const toggleSelectAllOnPage = () => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (allPageSelected) {
+                paginatedLeads.forEach((l) => next.delete(l.id));
+            } else {
+                paginatedLeads.forEach((l) => next.add(l.id));
+            }
+            return next;
+        });
+    };
+
+    // Stats
+    const stats = {
+        total: leads.length,
+        today: leads.filter(
+            (l) =>
+                new Date(l.createdAt).toDateString() === new Date().toDateString()
+        ).length,
+        topService: leads.length > 0
+            ? Object.entries(
+                leads.reduce<Record<string, number>>((acc, l) => {
+                    acc[l.serviceNeeded] = (acc[l.serviceNeeded] || 0) + 1;
+                    return acc;
+                }, {})
+            ).sort((a, b) => b[1] - a[1])[0]?.[0] || "N/A"
+            : "N/A",
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-50 rounded-lg">
+                                <Users className="h-5 w-5 text-blue-600" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Total Leads</p>
+                                <p className="text-2xl font-bold">{stats.total}</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-green-50 rounded-lg">
+                                <Clock className="h-5 w-5 text-green-600" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Today</p>
+                                <p className="text-2xl font-bold">{stats.today}</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardContent className="pt-6">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-purple-50 rounded-lg">
+                                <BarChart3 className="h-5 w-5 text-purple-600" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Top Service</p>
+                                <p className="text-lg font-bold truncate">{stats.topService}</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Table Card */}
+            <Card>
+                <CardHeader>
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                        <CardTitle className="flex items-center gap-2">
+                            <Users className="h-5 w-5" />
+                            Portfolio Leads
+                        </CardTitle>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    className="pl-10 w-48 bg-secondary/30 h-10 border-transparent focus-visible:ring-1 focus-visible:ring-primary/20 transition-all rounded-full"
+                                    placeholder="Search leads..."
+                                    value={searchQuery}
+                                    onChange={(e) => {
+                                        setSearchQuery(e.target.value);
+                                        setCurrentPage(1);
+                                    }}
+                                />
+                            </div>
+                            <FilterSelect
+                                value={serviceFilter}
+                                onValueChange={(v) => {
+                                    setServiceFilter(v);
+                                    setCurrentPage(1);
+                                }}
+                                placeholder="Filter by service"
+                                className="w-[180px]"
+                                options={[
+                                    { value: "all", label: "All Services" },
+                                    ...SERVICE_OPTIONS.map((s) => ({ value: s, label: s })),
+                                ]}
+                            />
+                            <Button variant="outline" size="sm" onClick={fetchLeads}>
+                                <RefreshCw className="h-4 w-4 mr-1" />
+                                Refresh
+                            </Button>
+                            {selectedIds.size > 0 && (
+                                <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    disabled={deleting}
+                                    onClick={() => deleteLeads(Array.from(selectedIds))}
+                                >
+                                    {deleting ? (
+                                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                    ) : (
+                                        <Trash2 className="h-4 w-4 mr-1" />
+                                    )}
+                                    Delete ({selectedIds.size})
+                                </Button>
+                            )}
+                            <Button size="sm" onClick={exportCSV} disabled={filtered.length === 0}>
+                                <Download className="h-4 w-4 mr-1" />
+                                Export CSV
+                            </Button>
+                        </div>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    {loading ? (
+                        <div className="flex items-center justify-center py-12">
+                            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                        </div>
+                    ) : filtered.length === 0 ? (
+                        <p className="text-muted-foreground text-center py-8">
+                            No leads found.
+                        </p>
+                    ) : (
+                        <>
+                            <div className="rounded-lg border overflow-hidden">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead className="w-10">
+                                                <Checkbox
+                                                    checked={allPageSelected}
+                                                    onCheckedChange={toggleSelectAllOnPage}
+                                                    aria-label="Select all on page"
+                                                />
+                                            </TableHead>
+                                            <TableHead>Name</TableHead>
+                                            <TableHead>Email</TableHead>
+                                            <TableHead>Phone</TableHead>
+                                            <TableHead>Service</TableHead>
+                                            <TableHead>Submitted</TableHead>
+                                            <TableHead className="w-10"></TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {paginatedLeads.map((lead) => (
+                                            <TableRow key={lead.id} data-state={selectedIds.has(lead.id) ? "selected" : undefined}>
+                                                <TableCell>
+                                                    <Checkbox
+                                                        checked={selectedIds.has(lead.id)}
+                                                        onCheckedChange={() => toggleSelect(lead.id)}
+                                                        aria-label={`Select ${lead.firstName} ${lead.lastName}`}
+                                                    />
+                                                </TableCell>
+                                                <TableCell className="font-medium">
+                                                    {lead.firstName} {lead.lastName}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Mail className="h-3.5 w-3.5 text-muted-foreground" />
+                                                        <a
+                                                            href={`mailto:${lead.email}`}
+                                                            className="text-blue-600 hover:underline"
+                                                        >
+                                                            {lead.email}
+                                                        </a>
+                                                    </div>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Phone className="h-3.5 w-3.5 text-muted-foreground" />
+                                                        {formatPhone(lead.phone)}
+                                                    </div>
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Badge variant="secondary">{lead.serviceNeeded}</Badge>
+                                                </TableCell>
+                                                <TableCell className="text-muted-foreground text-sm">
+                                                    {new Date(lead.createdAt).toLocaleDateString("en-US", {
+                                                        month: "short",
+                                                        day: "numeric",
+                                                        year: "numeric",
+                                                        hour: "2-digit",
+                                                        minute: "2-digit",
+                                                    })}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-8 w-8"
+                                                        disabled={deleting}
+                                                        onClick={() => deleteLeads([lead.id])}
+                                                        title="Delete lead"
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                                                    </Button>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </div>
+
+                            {/* Pagination */}
+                            {totalPages > 1 && (
+                                <div className="flex items-center justify-between mt-4">
+                                    <p className="text-sm text-muted-foreground">
+                                        Showing {(currentPage - 1) * LEADS_PER_PAGE + 1}–
+                                        {Math.min(currentPage * LEADS_PER_PAGE, filtered.length)} of{" "}
+                                        {filtered.length}
+                                    </p>
+                                    <div className="flex items-center gap-1">
+                                        <Button
+                                            variant="outline"
+                                            size="icon"
+                                            disabled={currentPage === 1}
+                                            onClick={() => setCurrentPage((p) => p - 1)}
+                                        >
+                                            <ChevronLeft className="h-4 w-4" />
+                                        </Button>
+                                        <span className="text-sm px-3">
+                                            {currentPage} / {totalPages}
+                                        </span>
+                                        <Button
+                                            variant="outline"
+                                            size="icon"
+                                            disabled={currentPage === totalPages}
+                                            onClick={() => setCurrentPage((p) => p + 1)}
+                                        >
+                                            <ChevronRight className="h-4 w-4" />
+                                        </Button>
+                                    </div>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTFOLIO CONTENT CONTROL TAB
+   ═══════════════════════════════════════════════════════════════ */
+function ContentControl({ sections }: { sections: Category[] }) {
+    const [videos, setVideos] = useState<PortfolioVideo[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [categoryFilter, setCategoryFilter] = useState("all");
+    const [showDialog, setShowDialog] = useState(false);
+    const [editingVideo, setEditingVideo] = useState<PortfolioVideo | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [previewVideo, setPreviewVideo] = useState<PortfolioVideo | null>(null);
+
+    // Flatten subcategories for easier select options — channel cards and
+    // photography (no subs / image gallery) are managed separately.
+    const allSubcategories = sections
+        .filter((c) => c.key !== PHOTOGRAPHY_CATEGORY_KEY)
+        .flatMap(c => c.subcategories.map(s => ({
+            ...s,
+            parentLabel: c.label
+        })))
+        .filter(s => s.key !== CHANNEL_CATEGORY_KEY);
+
+    const [formData, setFormData] = useState({
+        title: "",
+        description: "",
+        videoUrl: "",
+        thumbnailUrl: "",
+        category: allSubcategories[0]?.key || "",
+        order: "0",
+    });
+    const [showAdvanced, setShowAdvanced] = useState(false);
+    const [lockedCategory, setLockedCategory] = useState<string | null>(null);
+
+    const nextOrderForCategory = useCallback(
+        (category: string) => {
+            const catVideos = videos.filter((v) => v.category === category);
+            return catVideos.length > 0
+                ? Math.max(...catVideos.map((v) => v.order)) + 1
+                : 0;
+        },
+        [videos]
+    );
+
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, field: 'videoUrl' | 'thumbnailUrl') => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const formDataPayload = new FormData();
+        formDataPayload.append('file', file);
+
+        const toastId = toast.loading(`Uploading ${field === 'videoUrl' ? 'video' : 'thumbnail'}...`);
+
+        try {
+            const res = await fetch('/api/portfolio/upload', {
+                method: 'POST',
+                body: formDataPayload,
+            });
+            const data = await res.json();
+            if (data.ok) {
+                setFormData(prev => ({ ...prev, [field]: data.url }));
+                toast.success('Upload successful', { id: toastId });
+            } else {
+                toast.error(data.message || 'Upload failed', { id: toastId });
+            }
+        } catch (err) {
+            toast.error('Upload failed', { id: toastId });
+        }
+    };
+
+    const fetchVideos = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch("/api/portfolio/videos?all=true");
+            const data = await res.json();
+            if (data.ok) setVideos(data.videos || []);
+        } catch {
+            toast.error("Failed to load videos");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchVideos();
+    }, [fetchVideos]);
+
+    const resetForm = () => {
+        setFormData({
+            title: "",
+            description: "",
+            videoUrl: "",
+            thumbnailUrl: "",
+            category: allSubcategories[0]?.key || "",
+            order: "0",
+        });
+        setShowAdvanced(false);
+        setLockedCategory(null);
+        setEditingVideo(null);
+    };
+
+    const openAddDialog = (presetCategory?: string) => {
+        resetForm();
+        if (presetCategory) {
+            setLockedCategory(presetCategory);
+            setFormData((prev) => ({
+                ...prev,
+                category: presetCategory,
+                order: String(nextOrderForCategory(presetCategory)),
+            }));
+        }
+        setShowDialog(true);
+    };
+
+    const openEditDialog = (v: PortfolioVideo) => {
+        setEditingVideo(v);
+        setShowAdvanced(false);
+        setLockedCategory(null);
+        setFormData({
+            title: v.title,
+            description: v.description,
+            videoUrl: v.videoUrl,
+            thumbnailUrl: v.thumbnailUrl || "",
+            category: v.category,
+            order: String(v.order),
+        });
+        setShowDialog(true);
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!formData.title.trim()) {
+            toast.error("Title is required");
+            return;
+        }
+        if (!formData.videoUrl.trim()) {
+            toast.error("Video URL is required");
+            return;
+        }
+
+        setSubmitting(true);
+        try {
+            if (editingVideo) {
+                // Update existing video
+                const res = await fetch(`/api/portfolio/videos/${editingVideo.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        title: formData.title.trim(),
+                        description: formData.description.trim(),
+                        videoUrl: formData.videoUrl.trim(),
+                        thumbnailUrl: formData.thumbnailUrl.trim() || null,
+                        category: formData.category,
+                        order: parseInt(formData.order) || 0,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Update failed");
+                toast.success("Video updated");
+            } else {
+                // Create new video
+                const res = await fetch("/api/portfolio/videos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        title: formData.title.trim(),
+                        description: formData.description.trim(),
+                        videoUrl: formData.videoUrl.trim(),
+                        thumbnailUrl: formData.thumbnailUrl.trim() || null,
+                        category: formData.category,
+                        order: parseInt(formData.order) || 0,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Create failed");
+                toast.success("Video added");
+            }
+            setShowDialog(false);
+            resetForm();
+            fetchVideos();
+        } catch (err: any) {
+            toast.error(err.message || "Operation failed");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm("Delete this portfolio video? This cannot be undone.")) return;
+        try {
+            const res = await fetch(`/api/portfolio/videos/${id}`, {
+                method: "DELETE",
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.message || "Delete failed");
+            }
+            toast.success("Video deleted");
+            fetchVideos();
+        } catch (err: any) {
+            toast.error(err.message || "Delete failed");
+        }
+    };
+
+    const handleToggleActive = async (video: PortfolioVideo) => {
+        try {
+            const res = await fetch(`/api/portfolio/videos/${video.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ isActive: !video.isActive }),
+            });
+            if (!res.ok) throw new Error("Toggle failed");
+            toast.success(video.isActive ? "Video hidden" : "Video visible");
+            fetchVideos();
+        } catch {
+            toast.error("Failed to toggle visibility");
+        }
+    };
+
+    const handleReorder = async (video: PortfolioVideo, direction: "up" | "down") => {
+        const sameCat = videos
+            .filter((v) => v.category === video.category)
+            .sort((a, b) => a.order - b.order);
+        const idx = sameCat.findIndex((v) => v.id === video.id);
+        const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= sameCat.length) return;
+
+        try {
+            await persistReorder(sameCat, idx, swapIdx, (id) => `/api/portfolio/videos/${id}`);
+            fetchVideos();
+        } catch {
+            toast.error("Failed to reorder");
+            fetchVideos();
+        }
+    };
+
+    // Get YouTube thumbnail from URL helper
+    function getYTThumb(url: string): string | null {
+        const m = url.match(
+            /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/
+        );
+        return m ? `https://img.youtube.com/vi/${m[1]}/mqdefault.jpg` : null;
+    }
+
+    // Grouped and sorted — always show every section (even empty ones) so a
+    // video can be added directly from its section, not just globally.
+    const displayedCategories =
+        categoryFilter === "all"
+            ? allSubcategories
+            : allSubcategories.filter((c) => c.key === categoryFilter);
+
+    const byCategory = displayedCategories.reduce<Record<string, PortfolioVideo[]>>(
+        (acc, c) => {
+            acc[c.key] = videos
+                .filter((v) => v.category === c.key)
+                .sort((a, b) => a.order - b.order);
+            return acc;
+        },
+        {}
+    );
+
+    // Category stats
+    const categoryStats = allSubcategories.map((sub) => ({
+        key: sub.key,
+        label: sub.label,
+        total: videos.filter((v) => v.category === sub.key).length,
+        active: videos.filter((v) => v.category === sub.key && v.isActive).length,
+    }));
+
+    return (
+        <div className="space-y-6">
+            {/* Category Overview Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {categoryStats.map((cat) => (
+                    <Card
+                        key={cat.key}
+                        className={`cursor-pointer transition-all hover:shadow-md ${categoryFilter === cat.key ? "ring-2 ring-primary" : ""
+                            }`}
+                        onClick={() =>
+                            setCategoryFilter(categoryFilter === cat.key ? "all" : cat.key)
+                        }
+                    >
+                        <CardContent className="pt-4 pb-3 px-4">
+                            <p className="text-xs font-medium text-muted-foreground truncate">
+                                {cat.label}
+                            </p>
+                            <div className="flex items-baseline gap-1 mt-1">
+                                <span className="text-xl font-bold">{cat.total}</span>
+                                <span className="text-xs text-muted-foreground">
+                                    ({cat.active} active)
+                                </span>
+                            </div>
+                        </CardContent>
+                    </Card>
+                ))}
+            </div>
+
+            {/* Main Control Card */}
+            <Card>
+                <CardHeader>
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                        <CardTitle className="flex items-center gap-2">
+                            <Film className="h-5 w-5" />
+                            Portfolio Videos
+                        </CardTitle>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <FilterSelect
+                                value={categoryFilter}
+                                onValueChange={setCategoryFilter}
+                                placeholder="Filter category"
+                                className="w-[180px]"
+                                options={[
+                                    { value: "all", label: "All Categories" },
+                                    ...allSubcategories.map((c) => ({ value: c.key, label: c.label })),
+                                ]}
+                            />
+                            <Button variant="outline" size="sm" onClick={fetchVideos}>
+                                <RefreshCw className="h-4 w-4 mr-1" />
+                                Refresh
+                            </Button>
+                            <Button size="sm" onClick={() => openAddDialog()}>
+                                <Plus className="h-4 w-4 mr-1" />
+                                Add Video
+                            </Button>
+                        </div>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    {loading ? (
+                        <div className="flex items-center justify-center py-12">
+                            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                        </div>
+                    ) : displayedCategories.length === 0 ? (
+                        <div className="text-center py-12">
+                            <Film className="h-12 w-12 text-muted-foreground/30 mx-auto mb-3" />
+                            <p className="text-muted-foreground">
+                                No videos yet. Click <strong>Add Video</strong> to get started.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="space-y-8">
+                            {Object.entries(byCategory).map(([catKey, catVideos]) => {
+                                const catLabel =
+                                    allSubcategories.find((c) => c.key === catKey)?.label || catKey;
+                                return (
+                                    <div key={catKey}>
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                                                {catLabel}
+                                            </h3>
+                                            <div className="flex items-center gap-2">
+                                                <Badge variant="outline">
+                                                    {catVideos.length} video{catVideos.length !== 1 ? "s" : ""}
+                                                </Badge>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-7"
+                                                    onClick={() => openAddDialog(catKey)}
+                                                >
+                                                    <Plus className="h-3.5 w-3.5 mr-1" />
+                                                    Add here
+                                                </Button>
+                                            </div>
+                                        </div>
+                                        {catVideos.length === 0 && (
+                                            <p className="text-sm text-muted-foreground/70 italic mb-2">
+                                                No videos in this section yet.
+                                            </p>
+                                        )}
+                                        <div className="space-y-2">
+                                            {catVideos.map((video, idx) => {
+                                                const thumb =
+                                                    video.thumbnailUrl || getYTThumb(video.videoUrl);
+                                                return (
+                                                    <div
+                                                        key={video.id}
+                                                        className={`flex items-center gap-4 p-3 rounded-lg border transition-colors ${video.isActive
+                                                            ? "bg-card hover:bg-muted/60"
+                                                            : "bg-muted/30 opacity-60"
+                                                            }`}
+                                                    >
+                                                        {/* Reorder controls */}
+                                                        <div className="flex flex-col gap-0.5 shrink-0">
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-6 w-6"
+                                                                disabled={idx === 0}
+                                                                onClick={() => handleReorder(video, "up")}
+                                                            >
+                                                                <ArrowUp className="h-3 w-3" />
+                                                            </Button>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-6 w-6"
+                                                                disabled={idx === catVideos.length - 1}
+                                                                onClick={() => handleReorder(video, "down")}
+                                                            >
+                                                                <ArrowDown className="h-3 w-3" />
+                                                            </Button>
+                                                        </div>
+
+                                                        {/* Thumbnail */}
+                                                        <div className="w-24 h-14 rounded-md overflow-hidden bg-muted shrink-0">
+                                                            {thumb ? (
+                                                                <img
+                                                                    src={thumb}
+                                                                    alt={video.title}
+                                                                    className="w-full h-full object-cover"
+                                                                />
+                                                            ) : (
+                                                                <div className="w-full h-full flex items-center justify-center">
+                                                                    <Film className="h-5 w-5 text-muted-foreground" />
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        {/* Info */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center gap-2">
+                                                                <p className="font-medium truncate">
+                                                                    {video.title}
+                                                                </p>
+                                                                {!video.isActive && (
+                                                                    <Badge variant="secondary" className="text-xs shrink-0">
+                                                                        Hidden
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                            {video.description && (
+                                                                <p className="text-sm text-muted-foreground truncate">
+                                                                    {video.description}
+                                                                </p>
+                                                            )}
+                                                            <p className="text-xs text-muted-foreground mt-0.5">
+                                                                Order: {video.order} · Added{" "}
+                                                                {new Date(video.createdAt).toLocaleDateString()}
+                                                            </p>
+                                                        </div>
+
+                                                        {/* Actions */}
+                                                        <div className="flex items-center gap-1 shrink-0">
+                                                            {/* Toggle visibility */}
+                                                            <div className="flex items-center gap-1.5 mr-2" title={video.isActive ? "Visible" : "Hidden"}>
+                                                                <Switch
+                                                                    checked={video.isActive}
+                                                                    onCheckedChange={() => handleToggleActive(video)}
+                                                                />
+                                                            </div>
+                                                            <Button
+                                                                variant="outline"
+                                                                size="icon"
+                                                                className="h-8 w-8"
+                                                                onClick={() => setPreviewVideo(video)}
+                                                                title="Preview"
+                                                            >
+                                                                <Play className="h-3.5 w-3.5" />
+                                                            </Button>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-8 w-8"
+                                                                onClick={() => openEditDialog(video)}
+                                                                title="Edit"
+                                                            >
+                                                                <Edit className="h-3.5 w-3.5" />
+                                                            </Button>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-8 w-8"
+                                                                onClick={() => handleDelete(video.id)}
+                                                                title="Delete"
+                                                            >
+                                                                <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            {/* Add / Edit Dialog */}
+            <Dialog
+                open={showDialog}
+                onOpenChange={(open) => {
+                    setShowDialog(open);
+                    if (!open) resetForm();
+                }}
+            >
+                <DialogContent className="sm:max-w-[550px] max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>
+                            {editingVideo ? "Edit Video" : "Add Portfolio Video"}
+                        </DialogTitle>
+                        <DialogDescription>
+                            {editingVideo
+                                ? "Update the video details below."
+                                : "Add a new video to your portfolio. Paste a YouTube, Vimeo, or direct video URL."}
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        {lockedCategory && (
+                            <div className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-sm">
+                                <span>
+                                    Section:{" "}
+                                    <strong>
+                                        {allSubcategories.find((c) => c.key === lockedCategory)?.label ||
+                                            lockedCategory}
+                                    </strong>
+                                </span>
+                                <Button
+                                    type="button"
+                                    variant="link"
+                                    size="sm"
+                                    className="h-auto p-0"
+                                    onClick={() => {
+                                        setLockedCategory(null);
+                                        setShowAdvanced(true);
+                                    }}
+                                >
+                                    Change
+                                </Button>
+                            </div>
+                        )}
+                        <div className="space-y-2">
+                            <Label>Title *</Label>
+                            <Input
+                                value={formData.title}
+                                onChange={(e) =>
+                                    setFormData({ ...formData, title: e.target.value })
+                                }
+                                placeholder="e.g. Brand Video for Tesla"
+                                required
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Video URL *</Label>
+                            <div className="flex gap-2">
+                                <Input
+                                    value={formData.videoUrl}
+                                    onChange={(e) =>
+                                        setFormData({ ...formData, videoUrl: e.target.value })
+                                    }
+                                    placeholder="https://youtube.com/... or upload"
+                                    required
+                                />
+                                <div className="relative">
+                                    <input
+                                        type="file"
+                                        id="video-upload"
+                                        className="hidden"
+                                        accept="video/*"
+                                        onChange={(e) => handleFileUpload(e, 'videoUrl')}
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={() => document.getElementById('video-upload')?.click()}
+                                    >
+                                        <Upload className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                                YouTube, Vimeo, or direct upload to Cloudinary
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-2"
+                            onClick={() => setShowAdvanced((v) => !v)}
+                        >
+                            {showAdvanced ? "Hide" : "Show"} advanced options (description, thumbnail, category, order)
+                        </button>
+
+                        {showAdvanced && (
+                            <div className="space-y-4 border-t pt-4">
+                                <div className="space-y-2">
+                                    <Label>Description</Label>
+                                    <Textarea
+                                        value={formData.description}
+                                        onChange={(e) =>
+                                            setFormData({ ...formData, description: e.target.value })
+                                        }
+                                        placeholder="Short description of the video..."
+                                        rows={2}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Custom Thumbnail URL (optional)</Label>
+                                    <div className="flex gap-2">
+                                        <Input
+                                            value={formData.thumbnailUrl || ""}
+                                            onChange={(e) =>
+                                                setFormData({ ...formData, thumbnailUrl: e.target.value })
+                                            }
+                                            placeholder="https://... or upload"
+                                        />
+                                        <div className="relative">
+                                            <input
+                                                type="file"
+                                                id="thumb-upload"
+                                                className="hidden"
+                                                accept="image/*"
+                                                onChange={(e) => handleFileUpload(e, 'thumbnailUrl')}
+                                            />
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="icon"
+                                                onClick={() => document.getElementById('thumb-upload')?.click()}
+                                            >
+                                                <ImageIcon className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        YouTube thumbnails are auto-detected. Use this to override.
+                                    </p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <Label>Category *</Label>
+                                        <Select
+                                            value={formData.category}
+                                            onValueChange={(val) =>
+                                                setFormData({
+                                                    ...formData,
+                                                    category: val,
+                                                    order: editingVideo
+                                                        ? formData.order
+                                                        : String(nextOrderForCategory(val)),
+                                                })
+                                            }
+                                        >
+                                            <SelectTrigger>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {allSubcategories.map((c) => (
+                                                    <SelectItem key={c.key} value={c.key}>
+                                                        {c.parentLabel} - {c.label}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>Display Order</Label>
+                                        <Input
+                                            type="number"
+                                            min={0}
+                                            value={formData.order}
+                                            onChange={(e) =>
+                                                setFormData({ ...formData, order: e.target.value })
+                                            }
+                                            placeholder="0"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        <DialogFooter>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                    setShowDialog(false);
+                                    resetForm();
+                                }}
+                            >
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={submitting}>
+                                {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                {editingVideo ? "Save Changes" : "Add Video"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Preview Dialog */}
+            <Dialog
+                open={!!previewVideo}
+                onOpenChange={(open) => !open && setPreviewVideo(null)}
+            >
+                <DialogContent className="max-w-4xl w-[95vw] p-0 gap-0 overflow-hidden">
+                    <DialogHeader className="p-4 pb-0">
+                        <DialogTitle className="pr-8">
+                            {previewVideo?.title || "Preview"}
+                        </DialogTitle>
+                        <DialogDescription>
+                            Preview how this video appears in the portfolio.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="p-4">
+                        {previewVideo && (
+                            <div className="aspect-video w-full rounded-lg overflow-hidden bg-black">
+                                <iframe
+                                    src={getEmbedUrl(previewVideo.videoUrl)}
+                                    className="w-full h-full"
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                    allowFullScreen
+                                    title={previewVideo.title}
+                                />
+                            </div>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+/* ── helper: extract embed URL ── */
+function getEmbedUrl(url: string): string {
+    const ytMatch = url.match(
+        /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/
+    );
+    if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}`;
+    const vmMatch = url.match(/vimeo\.com\/(\d+)/);
+    if (vmMatch) return `https://player.vimeo.com/video/${vmMatch[1]}`;
+    return url;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CHANNEL CARDS  (e.g. "Who We Work With") — paste a channel link,
+   name + profile picture are auto-fetched; follower count is manual.
+   ═══════════════════════════════════════════════════════════════ */
+interface PortfolioChannel {
+    id: string;
+    name: string;
+    channelUrl: string;
+    avatarUrl: string | null;
+    followerCount: string;
+    category: string;
+    order: number;
+    isActive: boolean;
+}
+
+function ChannelControl({ category, label }: { category: string; label: string }) {
+    const [channels, setChannels] = useState<PortfolioChannel[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [showDialog, setShowDialog] = useState(false);
+    const [editingChannel, setEditingChannel] = useState<PortfolioChannel | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [formData, setFormData] = useState({ channelUrl: "", followerCount: "" });
+
+    const fetchChannels = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch(`/api/portfolio/channels?all=true&category=${category}`);
+            const data = await res.json();
+            if (data.ok) setChannels(data.channels || []);
+        } catch {
+            toast.error("Failed to load channels");
+        } finally {
+            setLoading(false);
+        }
+    }, [category]);
+
+    useEffect(() => {
+        fetchChannels();
+    }, [fetchChannels]);
+
+    const resetForm = () => {
+        setFormData({ channelUrl: "", followerCount: "" });
+        setEditingChannel(null);
+    };
+
+    const openAddDialog = () => {
+        resetForm();
+        setShowDialog(true);
+    };
+
+    const openEditDialog = (c: PortfolioChannel) => {
+        setEditingChannel(c);
+        setFormData({ channelUrl: c.channelUrl, followerCount: c.followerCount });
+        setShowDialog(true);
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!formData.channelUrl.trim()) {
+            toast.error("Channel URL is required");
+            return;
+        }
+        setSubmitting(true);
+        try {
+            if (editingChannel) {
+                const res = await fetch(`/api/portfolio/channels/${editingChannel.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        channelUrl: formData.channelUrl.trim(),
+                        followerCount: formData.followerCount.trim(),
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Update failed");
+                toast.success("Channel updated");
+            } else {
+                const catVideos = channels;
+                const nextOrder = catVideos.length > 0 ? Math.max(...catVideos.map((c) => c.order)) + 1 : 0;
+                const res = await fetch("/api/portfolio/channels", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        channelUrl: formData.channelUrl.trim(),
+                        followerCount: formData.followerCount.trim(),
+                        category,
+                        order: nextOrder,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Create failed");
+                if (data.scrapeFailed) {
+                    toast.warning("Added, but couldn't auto-fetch the name/picture — edit it to fix manually");
+                } else {
+                    toast.success("Channel added");
+                }
+            }
+            setShowDialog(false);
+            resetForm();
+            fetchChannels();
+        } catch (err: any) {
+            toast.error(err.message || "Operation failed");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm("Remove this channel? This cannot be undone.")) return;
+        try {
+            const res = await fetch(`/api/portfolio/channels/${id}`, { method: "DELETE" });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.message || "Delete failed");
+            }
+            toast.success("Channel removed");
+            fetchChannels();
+        } catch (err: any) {
+            toast.error(err.message || "Delete failed");
+        }
+    };
+
+    const handleToggleActive = async (channel: PortfolioChannel) => {
+        try {
+            const res = await fetch(`/api/portfolio/channels/${channel.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ isActive: !channel.isActive }),
+            });
+            if (!res.ok) throw new Error("Toggle failed");
+            toast.success(channel.isActive ? "Channel hidden" : "Channel visible");
+            fetchChannels();
+        } catch {
+            toast.error("Failed to toggle visibility");
+        }
+    };
+
+    const handleReorder = async (channel: PortfolioChannel, direction: "up" | "down") => {
+        const sorted = [...channels].sort((a, b) => a.order - b.order);
+        const idx = sorted.findIndex((c) => c.id === channel.id);
+        const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= sorted.length) return;
+        try {
+            await persistReorder(sorted, idx, swapIdx, (id) => `/api/portfolio/channels/${id}`);
+            fetchChannels();
+        } catch {
+            toast.error("Failed to reorder");
+            fetchChannels();
+        }
+    };
+
+    const sorted = [...channels].sort((a, b) => a.order - b.order);
+
+    return (
+        <Card>
+            <CardHeader>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <CardTitle className="flex items-center gap-2">
+                        <Users className="h-5 w-5" />
+                        {label}
+                    </CardTitle>
+                    <Button size="sm" onClick={openAddDialog}>
+                        <Plus className="h-4 w-4 mr-1" />
+                        Add Channel
+                    </Button>
+                </div>
+            </CardHeader>
+            <CardContent>
+                {loading ? (
+                    <div className="flex items-center justify-center py-12">
+                        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    </div>
+                ) : sorted.length === 0 ? (
+                    <p className="text-sm text-muted-foreground/70 italic py-4">
+                        No channels yet. Click <strong>Add Channel</strong> and paste a YouTube channel link.
+                    </p>
+                ) : (
+                    <div className="space-y-2">
+                        {sorted.map((channel, idx) => (
+                            <div
+                                key={channel.id}
+                                className={`flex items-center gap-4 p-3 rounded-lg border transition-colors ${channel.isActive ? "bg-card hover:bg-muted/60" : "bg-muted/30 opacity-60"
+                                    }`}
+                            >
+                                <div className="flex flex-col gap-0.5 shrink-0">
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={idx === 0} onClick={() => handleReorder(channel, "up")}>
+                                        <ArrowUp className="h-3 w-3" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={idx === sorted.length - 1} onClick={() => handleReorder(channel, "down")}>
+                                        <ArrowDown className="h-3 w-3" />
+                                    </Button>
+                                </div>
+                                <div className="w-12 h-12 rounded-full overflow-hidden bg-muted shrink-0">
+                                    {channel.avatarUrl ? (
+                                        <img src={channel.avatarUrl} alt={channel.name} className="w-full h-full object-cover" />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                            <Users className="h-5 w-5 text-muted-foreground" />
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <p className="font-medium truncate">{channel.name}</p>
+                                        {!channel.isActive && (
+                                            <Badge variant="secondary" className="text-xs shrink-0">Hidden</Badge>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-muted-foreground truncate">
+                                        {channel.followerCount || "No follower count set"}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                    <div className="flex items-center gap-1.5 mr-2" title={channel.isActive ? "Visible" : "Hidden"}>
+                                        <Switch checked={channel.isActive} onCheckedChange={() => handleToggleActive(channel)} />
+                                    </div>
+                                    <Button variant="outline" size="icon" className="h-8 w-8" asChild title="Open channel">
+                                        <a href={channel.channelUrl} target="_blank" rel="noopener noreferrer">
+                                            <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(channel)} title="Edit">
+                                        <Edit className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDelete(channel.id)} title="Delete">
+                                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </CardContent>
+
+            <Dialog open={showDialog} onOpenChange={(open) => { setShowDialog(open); if (!open) resetForm(); }}>
+                <DialogContent className="sm:max-w-[450px]">
+                    <DialogHeader>
+                        <DialogTitle>{editingChannel ? "Edit Channel" : "Add Channel"}</DialogTitle>
+                        <DialogDescription>
+                            Paste a YouTube channel link — the name and profile picture are fetched automatically. Follower count is manual.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="space-y-2">
+                            <Label>Channel URL *</Label>
+                            <Input
+                                value={formData.channelUrl}
+                                onChange={(e) => setFormData({ ...formData, channelUrl: e.target.value })}
+                                placeholder="https://youtube.com/@handle"
+                                required
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Follower Count</Label>
+                            <Input
+                                value={formData.followerCount}
+                                onChange={(e) => setFormData({ ...formData, followerCount: e.target.value })}
+                                placeholder="e.g. 125K subscribers"
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => { setShowDialog(false); resetForm(); }}>
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={submitting}>
+                                {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                {editingChannel ? "Save Changes" : "Add Channel"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   HOME PAGE VIDEO CAROUSEL CONTROL
+   Short-form videos shown in the autoplay-muted infinite carousel
+   on the public homepage. Fixed category, independent of the
+   /portfolio sections hierarchy — same pattern as ChannelControl.
+   ═══════════════════════════════════════════════════════════════ */
+function HomeCarouselControl() {
+    const [videos, setVideos] = useState<PortfolioVideo[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [showDialog, setShowDialog] = useState(false);
+    const [editingVideo, setEditingVideo] = useState<PortfolioVideo | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [uploadingVideo, setUploadingVideo] = useState(false);
+    const [uploadingThumb, setUploadingThumb] = useState(false);
+    const [formData, setFormData] = useState({
+        title: "",
+        description: "",
+        videoUrl: "",
+        thumbnailUrl: "",
+    });
+
+    const fetchVideos = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch(
+                `/api/portfolio/videos?all=true&category=${HOME_CAROUSEL_CATEGORY_KEY}`
+            );
+            const data = await res.json();
+            if (data.ok) setVideos(data.videos || []);
+        } catch {
+            toast.error("Failed to load home carousel videos");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchVideos();
+    }, [fetchVideos]);
+
+    const resetForm = () => {
+        setFormData({ title: "", description: "", videoUrl: "", thumbnailUrl: "" });
+        setEditingVideo(null);
+    };
+
+    const openAddDialog = () => {
+        resetForm();
+        setShowDialog(true);
+    };
+
+    const openEditDialog = (v: PortfolioVideo) => {
+        setEditingVideo(v);
+        setFormData({
+            title: v.title,
+            description: v.description,
+            videoUrl: v.videoUrl,
+            thumbnailUrl: v.thumbnailUrl || "",
+        });
+        setShowDialog(true);
+    };
+
+    const handleFileUpload = async (
+        e: React.ChangeEvent<HTMLInputElement>,
+        field: "videoUrl" | "thumbnailUrl"
+    ) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const payload = new FormData();
+        payload.append("file", file);
+        const setBusy = field === "videoUrl" ? setUploadingVideo : setUploadingThumb;
+        setBusy(true);
+        const toastId = toast.loading(`Uploading ${field === "videoUrl" ? "video" : "thumbnail"}...`);
+
+        try {
+            const res = await fetch("/api/portfolio/upload", { method: "POST", body: payload });
+            const data = await res.json();
+            if (data.ok) {
+                setFormData((prev) => ({ ...prev, [field]: data.url }));
+                toast.success("Upload successful", { id: toastId });
+            } else {
+                toast.error(data.message || "Upload failed", { id: toastId });
+            }
+        } catch {
+            toast.error("Upload failed", { id: toastId });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!formData.title.trim()) {
+            toast.error("Title is required");
+            return;
+        }
+        if (!formData.videoUrl.trim()) {
+            toast.error("A video file (or link) is required");
+            return;
+        }
+        setSubmitting(true);
+        try {
+            if (editingVideo) {
+                const res = await fetch(`/api/portfolio/videos/${editingVideo.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        title: formData.title.trim(),
+                        description: formData.description.trim(),
+                        videoUrl: formData.videoUrl.trim(),
+                        thumbnailUrl: formData.thumbnailUrl.trim() || null,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) throw new Error(data.message || "Update failed");
+                toast.success("Video updated");
+            } else {
+                const nextOrder = videos.length > 0 ? Math.max(...videos.map((v) => v.order)) + 1 : 0;
+                const res = await fetch("/api/portfolio/videos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        title: formData.title.trim(),
+                        description: formData.description.trim(),
+                        videoUrl: formData.videoUrl.trim(),
+                        thumbnailUrl: formData.thumbnailUrl.trim() || null,
+                        category: HOME_CAROUSEL_CATEGORY_KEY,
+                        order: nextOrder,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) throw new Error(data.message || "Create failed");
+                toast.success("Video added");
+            }
+            setShowDialog(false);
+            resetForm();
+            fetchVideos();
+        } catch (err: any) {
+            toast.error(err.message || "Operation failed");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm("Remove this video from the home carousel? This cannot be undone.")) return;
+        try {
+            const res = await fetch(`/api/portfolio/videos/${id}`, { method: "DELETE" });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.message || "Delete failed");
+            }
+            toast.success("Video removed");
+            fetchVideos();
+        } catch (err: any) {
+            toast.error(err.message || "Delete failed");
+        }
+    };
+
+    const handleToggleActive = async (video: PortfolioVideo) => {
+        try {
+            const res = await fetch(`/api/portfolio/videos/${video.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ isActive: !video.isActive }),
+            });
+            if (!res.ok) throw new Error("Toggle failed");
+            toast.success(video.isActive ? "Video hidden" : "Video visible");
+            fetchVideos();
+        } catch {
+            toast.error("Failed to toggle visibility");
+        }
+    };
+
+    const handleReorder = async (video: PortfolioVideo, direction: "up" | "down") => {
+        const sorted = [...videos].sort((a, b) => a.order - b.order);
+        const idx = sorted.findIndex((v) => v.id === video.id);
+        const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= sorted.length) return;
+        try {
+            await persistReorder(sorted, idx, swapIdx, (id) => `/api/portfolio/videos/${id}`);
+            fetchVideos();
+        } catch {
+            toast.error("Failed to reorder");
+            fetchVideos();
+        }
+    };
+
+    const sorted = [...videos].sort((a, b) => a.order - b.order);
+
+    return (
+        <Card>
+            <CardHeader>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div>
+                        <CardTitle className="flex items-center gap-2">
+                            <Film className="h-5 w-5" />
+                            Home Page Video Carousel
+                        </CardTitle>
+                        <p className="text-sm text-muted-foreground mt-1">
+                            Short-form videos shown autoplaying (muted) in the scrolling carousel
+                            on the public homepage, below "What E8 Does".
+                        </p>
+                    </div>
+                    <Button size="sm" onClick={openAddDialog}>
+                        <Plus className="h-4 w-4 mr-1" />
+                        Add Video
+                    </Button>
+                </div>
+            </CardHeader>
+            <CardContent>
+                {loading ? (
+                    <div className="flex items-center justify-center py-12">
+                        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    </div>
+                ) : sorted.length === 0 ? (
+                    <p className="text-sm text-muted-foreground/70 italic py-4">
+                        No videos yet. Click <strong>Add Video</strong> to upload a short-form clip —
+                        the carousel is hidden on the homepage until at least one is added.
+                    </p>
+                ) : (
+                    <div className="space-y-2">
+                        {sorted.map((video, idx) => (
+                            <div
+                                key={video.id}
+                                className={`flex items-center gap-4 p-3 rounded-lg border transition-colors ${video.isActive ? "bg-card hover:bg-muted/60" : "bg-muted/30 opacity-60"
+                                    }`}
+                            >
+                                <div className="flex flex-col gap-0.5 shrink-0">
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={idx === 0} onClick={() => handleReorder(video, "up")}>
+                                        <ArrowUp className="h-3 w-3" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={idx === sorted.length - 1} onClick={() => handleReorder(video, "down")}>
+                                        <ArrowDown className="h-3 w-3" />
+                                    </Button>
+                                </div>
+                                <div className="w-12 h-[72px] rounded-lg overflow-hidden bg-muted shrink-0">
+                                    {video.thumbnailUrl ? (
+                                        <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                            <Play className="h-4 w-4 text-muted-foreground" />
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <p className="font-medium truncate">{video.title}</p>
+                                        {!video.isActive && (
+                                            <Badge variant="secondary" className="text-xs shrink-0">Hidden</Badge>
+                                        )}
+                                    </div>
+                                    <p className="text-sm text-muted-foreground truncate">
+                                        {video.description || "No description"}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                    <div className="flex items-center gap-1.5 mr-2" title={video.isActive ? "Visible" : "Hidden"}>
+                                        <Switch checked={video.isActive} onCheckedChange={() => handleToggleActive(video)} />
+                                    </div>
+                                    <Button variant="outline" size="icon" className="h-8 w-8" asChild title="Open video">
+                                        <a href={video.videoUrl} target="_blank" rel="noopener noreferrer">
+                                            <ExternalLink className="h-3.5 w-3.5" />
+                                        </a>
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(video)} title="Edit">
+                                        <Edit className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDelete(video.id)} title="Delete">
+                                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </CardContent>
+
+            <Dialog open={showDialog} onOpenChange={(open) => { setShowDialog(open); if (!open) resetForm(); }}>
+                <DialogContent className="sm:max-w-[480px]">
+                    <DialogHeader>
+                        <DialogTitle>{editingVideo ? "Edit Video" : "Add Video"}</DialogTitle>
+                        <DialogDescription>
+                            Upload a short-form vertical clip. It plays autoplay-muted-loop in the
+                            homepage carousel, so a thumbnail is optional but recommended.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="space-y-2">
+                            <Label>Title *</Label>
+                            <Input
+                                value={formData.title}
+                                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                                placeholder="e.g. StayFit305 Reel"
+                                required
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Description</Label>
+                            <Textarea
+                                value={formData.description}
+                                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                placeholder="Optional short note (not shown publicly)"
+                                rows={2}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Video *</Label>
+                            <Input
+                                value={formData.videoUrl}
+                                onChange={(e) => setFormData({ ...formData, videoUrl: e.target.value })}
+                                placeholder="Upload below, or paste a video/YouTube/Vimeo link"
+                            />
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="file"
+                                    accept="video/*"
+                                    id="home-carousel-video-upload"
+                                    className="hidden"
+                                    onChange={(e) => handleFileUpload(e, "videoUrl")}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={uploadingVideo}
+                                    onClick={() => document.getElementById("home-carousel-video-upload")?.click()}
+                                >
+                                    {uploadingVideo ? (
+                                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                                    ) : (
+                                        <Upload className="h-4 w-4 mr-1.5" />
+                                    )}
+                                    Upload Video
+                                </Button>
+                                {formData.videoUrl && (
+                                    <span className="text-xs text-muted-foreground truncate max-w-[240px]">
+                                        {formData.videoUrl}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Thumbnail (recommended)</Label>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    id="home-carousel-thumb-upload"
+                                    className="hidden"
+                                    onChange={(e) => handleFileUpload(e, "thumbnailUrl")}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={uploadingThumb}
+                                    onClick={() => document.getElementById("home-carousel-thumb-upload")?.click()}
+                                >
+                                    {uploadingThumb ? (
+                                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                                    ) : (
+                                        <Upload className="h-4 w-4 mr-1.5" />
+                                    )}
+                                    Upload Thumbnail
+                                </Button>
+                                {formData.thumbnailUrl && (
+                                    <img src={formData.thumbnailUrl} alt="Thumbnail preview" className="h-10 w-10 rounded object-cover" />
+                                )}
+                            </div>
+                        </div>
+                        <DialogFooter>
+                            <Button type="button" variant="outline" onClick={() => { setShowDialog(false); resetForm(); }}>
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={submitting}>
+                                {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                {editingVideo ? "Save Changes" : "Add Video"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+        </Card>
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PORTFOLIO SECTIONS MANAGEMENT
+   ═══════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   PHOTOGRAPHY / IMAGE CONTROL
+   ═══════════════════════════════════════════════════════════════ */
+function PhotoControl() {
+    const [images, setImages] = useState<PortfolioImage[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [showDialog, setShowDialog] = useState(false);
+    const [editingImage, setEditingImage] = useState<PortfolioImage | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [previewImage, setPreviewImage] = useState<PortfolioImage | null>(null);
+    const [formData, setFormData] = useState({
+        title: "",
+        description: "",
+        imageUrl: "",
+        order: "0",
+    });
+
+    const nextOrder = useCallback(() => {
+        return images.length > 0 ? Math.max(...images.map((i) => i.order)) + 1 : 0;
+    }, [images]);
+
+    const fetchImages = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch(
+                `/api/portfolio/images?all=true&category=${PHOTOGRAPHY_CATEGORY_KEY}`
+            );
+            const data = await res.json();
+            if (data.ok) setImages(data.images || []);
+            else toast.error("Failed to load photos");
+        } catch {
+            toast.error("Network error loading photos");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchImages();
+    }, [fetchImages]);
+
+    const resetForm = () => {
+        setFormData({
+            title: "",
+            description: "",
+            imageUrl: "",
+            order: String(nextOrder()),
+        });
+        setEditingImage(null);
+    };
+
+    const openAddDialog = () => {
+        setEditingImage(null);
+        setFormData({
+            title: "",
+            description: "",
+            imageUrl: "",
+            order: String(nextOrder()),
+        });
+        setShowDialog(true);
+    };
+
+    const openEditDialog = (img: PortfolioImage) => {
+        setEditingImage(img);
+        setFormData({
+            title: img.title,
+            description: img.description || "",
+            imageUrl: img.imageUrl,
+            order: String(img.order),
+        });
+        setShowDialog(true);
+    };
+
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const payload = new FormData();
+        payload.append("file", file);
+        const toastId = toast.loading("Uploading image…");
+
+        try {
+            const res = await fetch("/api/portfolio/upload", {
+                method: "POST",
+                body: payload,
+            });
+            const data = await res.json();
+            if (data.ok) {
+                setFormData((prev) => ({ ...prev, imageUrl: data.url }));
+                toast.success("Upload successful", { id: toastId });
+            } else {
+                toast.error(data.message || "Upload failed", { id: toastId });
+            }
+        } catch {
+            toast.error("Upload failed", { id: toastId });
+        } finally {
+            e.target.value = "";
+        }
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!formData.imageUrl.trim()) {
+            toast.error("Image URL or upload is required");
+            return;
+        }
+
+        setSubmitting(true);
+        try {
+            const body = {
+                title: formData.title.trim(),
+                description: formData.description.trim(),
+                imageUrl: formData.imageUrl.trim(),
+                category: PHOTOGRAPHY_CATEGORY_KEY,
+                order: parseInt(formData.order, 10) || 0,
+            };
+
+            if (editingImage) {
+                const res = await fetch(`/api/portfolio/images/${editingImage.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Update failed");
+                toast.success("Photo updated");
+            } else {
+                const res = await fetch("/api/portfolio/images", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.message || "Create failed");
+                toast.success("Photo added");
+            }
+            setShowDialog(false);
+            resetForm();
+            fetchImages();
+        } catch (err: any) {
+            toast.error(err.message || "Operation failed");
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm("Delete this photo? This cannot be undone.")) return;
+        try {
+            const res = await fetch(`/api/portfolio/images/${id}`, { method: "DELETE" });
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.message || "Delete failed");
+            }
+            toast.success("Photo deleted");
+            fetchImages();
+        } catch (err: any) {
+            toast.error(err.message || "Delete failed");
+        }
+    };
+
+    const handleToggleActive = async (img: PortfolioImage) => {
+        try {
+            const res = await fetch(`/api/portfolio/images/${img.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ isActive: !img.isActive }),
+            });
+            if (!res.ok) throw new Error("Toggle failed");
+            fetchImages();
+        } catch {
+            toast.error("Failed to update visibility");
+        }
+    };
+
+    const handleMove = async (img: PortfolioImage, dir: "up" | "down") => {
+        const sorted = [...images].sort((a, b) => a.order - b.order);
+        const idx = sorted.findIndex((i) => i.id === img.id);
+        const swapIdx = dir === "up" ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= sorted.length) return;
+        try {
+            await persistReorder(sorted, idx, swapIdx, (id) => `/api/portfolio/images/${id}`);
+            fetchImages();
+        } catch {
+            toast.error("Failed to reorder");
+            fetchImages();
+        }
+    };
+
+    const sorted = [...images].sort((a, b) => a.order - b.order);
+
+    return (
+        <div className="space-y-6">
+            <Card>
+                <CardHeader>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                            <CardTitle>Photography Gallery</CardTitle>
+                            <p className="text-sm text-muted-foreground mt-1">
+                                Images shown on the public portfolio Photography section.
+                                Paste an external URL or upload via Cloudinary.
+                            </p>
+                        </div>
+                        <div className="flex gap-2">
+                            <Button variant="outline" size="sm" onClick={fetchImages}>
+                                <RefreshCw className="h-4 w-4 mr-1" />
+                                Refresh
+                            </Button>
+                            <Button size="sm" onClick={openAddDialog}>
+                                <Plus className="h-4 w-4 mr-1" />
+                                Add Photo
+                            </Button>
+                        </div>
+                    </div>
+                </CardHeader>
+                <CardContent>
+                    {loading ? (
+                        <div className="flex justify-center py-12">
+                            <Loader2 className="h-8 w-8 animate-spin" />
+                        </div>
+                    ) : sorted.length === 0 ? (
+                        <div className="text-center py-16 text-muted-foreground">
+                            <ImageIcon className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                            <p className="font-medium">No photos yet</p>
+                            <p className="text-sm mt-1">Add your first photography piece to get started.</p>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {sorted.map((img, idx) => (
+                                <div
+                                    key={img.id}
+                                    className={`border rounded-xl overflow-hidden bg-card ${
+                                        !img.isActive ? "opacity-55" : ""
+                                    }`}
+                                >
+                                    <button
+                                        type="button"
+                                        className="relative w-full aspect-[4/3] bg-muted"
+                                        onClick={() => setPreviewImage(img)}
+                                    >
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                            src={img.thumbnailUrl || img.imageUrl}
+                                            alt={img.title}
+                                            className="absolute inset-0 w-full h-full object-cover"
+                                        />
+                                    </button>
+                                    <div className="p-3 space-y-2">
+                                        <div className="flex items-start justify-between gap-2">
+                                            <div className="min-w-0">
+                                                <p className="font-semibold text-sm truncate">
+                                                    {img.title || "Untitled photo"}
+                                                </p>
+                                                {img.description ? (
+                                                    <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                                                        {img.description}
+                                                    </p>
+                                                ) : null}
+                                            </div>
+                                            <Badge variant={img.isActive ? "default" : "outline"}>
+                                                {img.isActive ? "Live" : "Hidden"}
+                                            </Badge>
+                                        </div>
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                disabled={idx === 0}
+                                                onClick={() => handleMove(img, "up")}
+                                            >
+                                                <ArrowUp className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                disabled={idx === sorted.length - 1}
+                                                onClick={() => handleMove(img, "down")}
+                                            >
+                                                <ArrowDown className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                onClick={() => handleToggleActive(img)}
+                                                title={img.isActive ? "Hide" : "Show"}
+                                            >
+                                                {img.isActive ? (
+                                                    <Eye className="h-3.5 w-3.5" />
+                                                ) : (
+                                                    <EyeOff className="h-3.5 w-3.5" />
+                                                )}
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8"
+                                                onClick={() => openEditDialog(img)}
+                                            >
+                                                <Edit className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 text-destructive"
+                                                onClick={() => handleDelete(img.id)}
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Dialog
+                open={showDialog}
+                onOpenChange={(open) => {
+                    setShowDialog(open);
+                    if (!open) resetForm();
+                }}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>{editingImage ? "Edit Photo" : "Add Photo"}</DialogTitle>
+                        <DialogDescription>
+                            Upload a file (Cloudinary), paste an external image URL, or both.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="photo-title">Title (optional)</Label>
+                            <Input
+                                id="photo-title"
+                                value={formData.title}
+                                onChange={(e) =>
+                                    setFormData((p) => ({ ...p, title: e.target.value }))
+                                }
+                                placeholder="e.g. Downtown headshot session"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="photo-desc">Description (optional)</Label>
+                            <Textarea
+                                id="photo-desc"
+                                value={formData.description}
+                                onChange={(e) =>
+                                    setFormData((p) => ({ ...p, description: e.target.value }))
+                                }
+                                rows={2}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="photo-url">Image URL</Label>
+                            <Input
+                                id="photo-url"
+                                value={formData.imageUrl}
+                                onChange={(e) =>
+                                    setFormData((p) => ({ ...p, imageUrl: e.target.value }))
+                                }
+                                placeholder="https://… or upload below"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="photo-file">Upload image</Label>
+                            <Input
+                                id="photo-file"
+                                type="file"
+                                accept="image/*"
+                                onChange={handleFileUpload}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Direct upload goes to Cloudinary and fills the URL above.
+                            </p>
+                        </div>
+                        {formData.imageUrl ? (
+                            <div className="relative w-full aspect-video rounded-lg overflow-hidden border bg-muted">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                    src={formData.imageUrl}
+                                    alt="Preview"
+                                    className="absolute inset-0 w-full h-full object-contain"
+                                />
+                            </div>
+                        ) : null}
+                        <div className="space-y-2">
+                            <Label htmlFor="photo-order">Order</Label>
+                            <Input
+                                id="photo-order"
+                                type="number"
+                                value={formData.order}
+                                onChange={(e) =>
+                                    setFormData((p) => ({ ...p, order: e.target.value }))
+                                }
+                            />
+                        </div>
+                        <DialogFooter>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setShowDialog(false)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button type="submit" disabled={submitting}>
+                                {submitting && (
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                )}
+                                {editingImage ? "Save Changes" : "Add Photo"}
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={!!previewImage}
+                onOpenChange={(open) => {
+                    if (!open) setPreviewImage(null);
+                }}
+            >
+                <DialogContent className="sm:max-w-3xl">
+                    <DialogHeader>
+                        <DialogTitle>{previewImage?.title}</DialogTitle>
+                        {previewImage?.description ? (
+                            <DialogDescription>{previewImage.description}</DialogDescription>
+                        ) : null}
+                    </DialogHeader>
+                    {previewImage ? (
+                        <div className="relative w-full max-h-[70vh] aspect-auto">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                                src={previewImage.imageUrl}
+                                alt={previewImage.title}
+                                className="w-full max-h-[70vh] object-contain rounded-lg"
+                            />
+                        </div>
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+function SectionsManagement({
+    sections,
+    settings,
+    onRefresh,
+}: {
+    sections: Category[];
+    settings: { howItWorksVisible: boolean };
+    onRefresh: () => void;
+}) {
+    const [saving, setSaving] = useState(false);
+    const [editingSections, setEditingSections] = useState<Category[]>([]);
+    const [howItWorksVisible, setHowItWorksVisible] = useState(true);
+
+    useEffect(() => {
+        setEditingSections(JSON.parse(JSON.stringify(sections)));
+    }, [sections]);
+
+    useEffect(() => {
+        setHowItWorksVisible(settings.howItWorksVisible !== false);
+    }, [settings]);
+
+    const handleSave = async () => {
+        setSaving(true);
+        try {
+            const res = await fetch("/api/portfolio/sections", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sections: editingSections,
+                    settings: { howItWorksVisible },
+                }),
+            });
+            if (res.ok) {
+                toast.success("Sections updated successfully");
+                onRefresh();
+            } else {
+                const data = await res.json().catch(() => ({}));
+                toast.error(data.message || "Failed to update sections");
+            }
+        } catch {
+            toast.error("Network error updating sections");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const toggleMainCategory = (idx: number) => {
+        const newSections = [...editingSections];
+        newSections[idx].isActive = !newSections[idx].isActive;
+        setEditingSections(newSections);
+    };
+
+    const toggleSubcategory = (catIdx: number, subIdx: number) => {
+        const newSections = [...editingSections];
+        newSections[catIdx].subcategories[subIdx].isActive = !newSections[catIdx].subcategories[subIdx].isActive;
+        setEditingSections(newSections);
+    };
+
+    const updateMainLabel = (idx: number, label: string) => {
+        const newSections = [...editingSections];
+        newSections[idx].label = label;
+        setEditingSections(newSections);
+    };
+
+    const updateSubLabel = (catIdx: number, subIdx: number, label: string) => {
+        const newSections = [...editingSections];
+        newSections[catIdx].subcategories[subIdx].label = label;
+        setEditingSections(newSections);
+    };
+
+    const moveMain = (idx: number, dir: 'up' | 'down') => {
+        const newSections = [...editingSections];
+        const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
+        if (swapIdx < 0 || swapIdx >= newSections.length) return;
+        [newSections[idx], newSections[swapIdx]] = [newSections[swapIdx], newSections[idx]];
+        setEditingSections(newSections);
+    };
+
+    const moveSub = (catIdx: number, subIdx: number, dir: 'up' | 'down') => {
+        const newSections = [...editingSections];
+        const subs = [...newSections[catIdx].subcategories];
+        const swapIdx = dir === 'up' ? subIdx - 1 : subIdx + 1;
+        if (swapIdx < 0 || swapIdx >= subs.length) return;
+        [subs[subIdx], subs[swapIdx]] = [subs[swapIdx], subs[subIdx]];
+        newSections[catIdx].subcategories = subs;
+        setEditingSections(newSections);
+    };
+
+    return (
+        <div className="space-y-6">
+            <Card>
+                <CardHeader>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <CardTitle>Reorder & Manage Sections</CardTitle>
+                            <p className="text-sm text-muted-foreground mt-1">
+                                Control which categories and subcategories appear in the public portfolio.
+                            </p>
+                        </div>
+                        <Button onClick={handleSave} disabled={saving}>
+                            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                            Save Configuration
+                        </Button>
+                    </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="border rounded-lg p-4 bg-muted/20 flex items-center gap-4">
+                        <div className="flex-1">
+                            <p className="font-bold text-lg">How It Works</p>
+                            <p className="text-sm text-muted-foreground mt-0.5">
+                                Show or hide the How It Works button and video on the public portfolio.
+                            </p>
+                        </div>
+                        <Badge variant={howItWorksVisible ? "default" : "outline"}>
+                            {howItWorksVisible ? "Visible" : "Hidden"}
+                        </Badge>
+                        <Switch
+                            checked={howItWorksVisible}
+                            onCheckedChange={setHowItWorksVisible}
+                        />
+                    </div>
+
+                    {editingSections.map((cat, catIdx) => {
+                        const isPhotography = cat.key === PHOTOGRAPHY_CATEGORY_KEY;
+                        return (
+                        <div key={cat.key} className="border rounded-lg p-4 bg-muted/20">
+                            <div className="flex items-center gap-4 mb-4">
+                                <div className="flex flex-col gap-1">
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={catIdx === 0} onClick={() => moveMain(catIdx, 'up')}>
+                                        <ChevronLeft className="h-4 w-4 rotate-90" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-6 w-6" disabled={catIdx === editingSections.length - 1} onClick={() => moveMain(catIdx, 'down')}>
+                                        <ChevronLeft className="h-4 w-4 -rotate-90" />
+                                    </Button>
+                                </div>
+                                <div className="flex-1 flex items-center gap-3">
+                                    <Input
+                                        value={cat.label}
+                                        onChange={(e) => updateMainLabel(catIdx, e.target.value)}
+                                        className="font-bold text-lg bg-transparent border-none focus-visible:ring-1 max-w-sm"
+                                    />
+                                    <Badge variant={cat.isActive ? "default" : "outline"}>
+                                        {cat.isActive ? "Visible" : "Hidden"}
+                                    </Badge>
+                                    {isPhotography && (
+                                        <Badge variant="secondary">No subcategories</Badge>
+                                    )}
+                                </div>
+                                <Switch checked={cat.isActive} onCheckedChange={() => toggleMainCategory(catIdx)} />
+                            </div>
+
+                            {isPhotography ? (
+                                <div className="ml-10 text-sm text-muted-foreground">
+                                    Photography shows images directly — manage photos in the Photos tab.
+                                </div>
+                            ) : (
+                            <div className="ml-10 space-y-2 border-l-2 pl-6">
+                                {cat.subcategories.map((sub, subIdx) => (
+                                    <div key={sub.key} className="flex items-center gap-3 p-2 rounded-md hover:bg-card transition-colors">
+                                        <div className="flex flex-col gap-0.5">
+                                            <Button variant="ghost" size="icon" className="h-5 w-5" disabled={subIdx === 0} onClick={() => moveSub(catIdx, subIdx, 'up')}>
+                                                <ArrowUp className="h-3 w-3" />
+                                            </Button>
+                                            <Button variant="ghost" size="icon" className="h-5 w-5" disabled={subIdx === cat.subcategories.length - 1} onClick={() => moveSub(catIdx, subIdx, 'down')}>
+                                                <ArrowDown className="h-3 w-3" />
+                                            </Button>
+                                        </div>
+                                        <Input
+                                            value={sub.label}
+                                            onChange={(e) => updateSubLabel(catIdx, subIdx, e.target.value)}
+                                            className="h-8 max-w-xs"
+                                        />
+                                        <div className="flex-1" />
+                                        <Switch checked={sub.isActive} onCheckedChange={() => toggleSubcategory(catIdx, subIdx)} />
+                                    </div>
+                                ))}
+                            </div>
+                            )}
+                        </div>
+                        );
+                    })}
+                </CardContent>
+            </Card>
+        </div>
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN EXPORTED COMPONENT — 3 tabs
+   ═══════════════════════════════════════════════════════════════ */
+export function PortfolioManagementTab() {
+    const [sections, setSections] = useState<Category[]>([]);
+    const [settings, setSettings] = useState({ howItWorksVisible: true });
+    const [loading, setLoading] = useState(true);
+
+    const fetchSections = useCallback(async () => {
+        try {
+            setLoading(true);
+            const res = await fetch("/api/portfolio/sections");
+            const data = await res.json();
+            if (data.ok) {
+                setSections(data.sections);
+                if (data.settings) {
+                    setSettings({
+                        howItWorksVisible: data.settings.howItWorksVisible !== false,
+                    });
+                }
+            }
+        } catch {
+            toast.error("Failed to load sections configuration");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchSections();
+    }, [fetchSections]);
+
+    if (loading && sections.length === 0) {
+        return (
+            <div className="flex items-center justify-center p-12">
+                <Loader2 className="h-8 w-8 animate-spin" />
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-6">
+            <PageHeader
+                title="Portfolio Management"
+                description="Manage portfolio leads and control public video content"
+                actions={
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => window.open("/portfolio", "_blank")}
+                    >
+                        <ExternalLink className="h-4 w-4 mr-1" />
+                        View Public Portfolio
+                    </Button>
+                }
+            />
+
+            <Tabs defaultValue="leads" className="w-full">
+                <TabsList className="grid w-full grid-cols-6 max-w-4xl">
+                    <TabsTrigger value="leads" className="flex items-center gap-2">
+                        <Users className="h-4 w-4" />
+                        Leads
+                    </TabsTrigger>
+                    <TabsTrigger value="sections" className="flex items-center gap-2">
+                        <SettingsIcon className="h-4 w-4" />
+                        Sections
+                    </TabsTrigger>
+                    <TabsTrigger value="content" className="flex items-center gap-2">
+                        <Film className="h-4 w-4" />
+                        Videos
+                    </TabsTrigger>
+                    <TabsTrigger value="photos" className="flex items-center gap-2">
+                        <ImageIcon className="h-4 w-4" />
+                        Photos
+                    </TabsTrigger>
+                    <TabsTrigger value="journey" className="flex items-center gap-2">
+                        <BarChart3 className="h-4 w-4" />
+                        Before & After
+                    </TabsTrigger>
+                    <TabsTrigger value="home-carousel" className="flex items-center gap-2">
+                        <Play className="h-4 w-4" />
+                        Home Carousel
+                    </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="leads" className="mt-6">
+                    <LeadManagement />
+                </TabsContent>
+
+                <TabsContent value="sections" className="mt-6">
+                    <SectionsManagement
+                        sections={sections}
+                        settings={settings}
+                        onRefresh={fetchSections}
+                    />
+                </TabsContent>
+
+                <TabsContent value="content" className="mt-6 space-y-6">
+                    <ContentControl sections={sections} />
+                    {(() => {
+                        const channelSub = sections
+                            .flatMap((c) => c.subcategories)
+                            .find((s) => s.key === CHANNEL_CATEGORY_KEY);
+                        return channelSub ? (
+                            <ChannelControl category={CHANNEL_CATEGORY_KEY} label={channelSub.label} />
+                        ) : null;
+                    })()}
+                </TabsContent>
+
+                <TabsContent value="photos" className="mt-6">
+                    <PhotoControl />
+                </TabsContent>
+
+                <TabsContent value="journey" className="mt-6">
+                    <PortfolioJourneyManager />
+                </TabsContent>
+
+                <TabsContent value="home-carousel" className="mt-6">
+                    <HomeCarouselControl />
+                </TabsContent>
+            </Tabs>
+        </div>
+    );
+}

@@ -1,0 +1,169 @@
+// Review System Types
+// Frame.io-style review system type definitions
+
+export interface ReviewComment {
+    id: string;
+    taskId: string;
+    authorId: string;
+    authorName: string;
+    authorAvatar?: string;
+    authorRole?: string; // e.g. 'client', 'qc', 'admin' — used to filter client-only comments
+    timestamp: string; // Video timestamp formatted "1:23"
+    timestampSeconds: number; // Video timestamp in seconds
+    endTimestamp?: string; // Optional end timestamp for ranges "1:28"
+    endTimestampSeconds?: number; // Optional end timestamp in seconds for ranges
+    isGeneral?: boolean; // True for a comment not tied to any specific time — shown as "General", excluded from timeline markers
+    content: string;
+    category: ('design' | 'content' | 'timing' | 'technical' | 'broll' | 'subtitles' | 'audio' | 'composition' | 'color' | 'text' | 'branding' | string)[];
+    thumbnailIndex?: number; // Optional 1-based index (e.g., 1, 2, 3 for #1, #2, #3) when comment is on a thumbnail variant
+
+    screenshotUrl?: string; // R2 URL of captured (optionally drawn-on) video frame
+    annotations?: Annotation[]; // Raw drawn strokes/shapes, relative (0-1) coords, tied to screenshotUrl
+
+    voiceUrl?: string; // R2 URL of a recorded voice comment
+    voiceDurationSec?: number; // Length of the voice note, for the player UI
+
+    attachments?: CommentAttachment[]; // General file/image attachments
+
+    replies?: ReviewComment[];
+    resolved: boolean;
+    version?: number; // Version number of the file when comment was made
+    fileId?: string; // Task file the comment was left on (image/hard post reviews)
+    createdAt: Date;
+    updatedAt?: Date;
+}
+
+// Deliverable type for aspect ratio handling
+export type DeliverableType = 'LF' | 'SF' | 'SQF' | 'Long Form Videos' | 'Short Form Videos' | 'Square Form Videos' | string;
+
+// Helper to get aspect ratio class based on deliverable type
+export function getAspectRatioClass(deliverableType?: DeliverableType): string {
+    if (!deliverableType) return 'aspect-video'; // Default to 16:9
+    
+    const normalized = deliverableType.toLowerCase().replace(/[_\s]/g, '');
+    
+    // Short Form (9:16 vertical)
+    if (normalized === 'sf' || normalized === 'shortformvideos' || normalized === 'shortform') {
+        return 'aspect-[9/16]';
+    }
+    
+    // Square Form (1:1)
+    if (normalized === 'sqf' || normalized === 'squareformvideos' || normalized === 'squareform') {
+        return 'aspect-square';
+    }
+    
+    // Long Form (16:9) - default
+    return 'aspect-video';
+}
+
+// Helper to get container styles based on deliverable type
+export function getVideoContainerStyles(deliverableType?: DeliverableType): { maxWidth: string; aspectClass: string } {
+    if (!deliverableType) return { maxWidth: 'max-w-5xl', aspectClass: 'aspect-video' };
+    
+    const normalized = deliverableType.toLowerCase().replace(/[_\s]/g, '');
+    
+    // Short Form (9:16 vertical) - narrower container
+    if (normalized === 'sf' || normalized === 'shortformvideos' || normalized === 'shortform') {
+        return { maxWidth: 'max-w-sm', aspectClass: 'aspect-[9/16]' };
+    }
+    
+    // Square Form (1:1) - medium container
+    if (normalized === 'sqf' || normalized === 'squareformvideos' || normalized === 'squareform') {
+        return { maxWidth: 'max-w-2xl', aspectClass: 'aspect-square' };
+    }
+    
+    // Long Form (16:9) - wide container
+    return { maxWidth: 'max-w-5xl', aspectClass: 'aspect-video' };
+}
+
+export interface Annotation {
+    id: string;
+    type: 'freehand' | 'arrow' | 'rectangle' | 'circle';
+    points: { x: number; y: number }[];
+    color: string;
+    strokeWidth: number;
+    timestampSeconds: number;
+}
+
+export interface CommentAttachment {
+    url: string;
+    name: string;
+    mimeType: string;
+    size: number; // bytes
+}
+
+export interface ReviewStatus {
+    value: 'needs_review' | 'in_progress' | 'needs_changes' | 'approved';
+    label: string;
+    color: string;
+    bgClass: string;
+}
+
+export const REVIEW_STATUSES: ReviewStatus[] = [
+    { value: 'needs_review', label: 'Needs Review', color: '#6b7280', bgClass: 'bg-gray-500' },
+    { value: 'in_progress', label: 'In Progress', color: '#3b82f6', bgClass: 'bg-blue-500' },
+    { value: 'needs_changes', label: 'Needs Changes', color: '#f97316', bgClass: 'bg-orange-500' },
+    { value: 'approved', label: 'Approved', color: '#22c55e', bgClass: 'bg-green-500' },
+];
+
+export interface CommentCategory {
+    value: 'design' | 'content' | 'timing' | 'technical' | 'broll' | 'subtitles' | 'audio' | 'general';
+    label: string;
+    color: string;
+}
+
+export const COMMENT_CATEGORIES: CommentCategory[] = [
+    { value: 'design', label: 'Design', color: '#8b5cf6' },
+    { value: 'content', label: 'Content', color: '#3b82f6' },
+    { value: 'timing', label: 'Timing', color: '#f59e0b' },
+    { value: 'technical', label: 'Technical', color: '#ef4444' },
+    { value: 'broll', label: 'Broll', color: '#6b7280' },
+    { value: 'subtitles', label: 'Subtitles', color: '#3b82f2' },
+    { value: 'audio', label: 'Audio', color: '#06b6d4' },
+];
+
+export interface ThumbnailCategory {
+    value: 'composition' | 'color' | 'text' | 'branding';
+    label: string;
+    color: string;
+}
+
+export const THUMBNAIL_CATEGORIES: ThumbnailCategory[] = [
+    { value: 'composition', label: 'COMPOSITION', color: '#8b5cf6' },
+    { value: 'color', label: 'COLOR', color: '#f59e0b' },
+    { value: 'text', label: 'TEXT', color: '#3b82f6' },
+    { value: 'branding', label: 'BRANDING', color: '#10b981' },
+];
+
+export type AnnotationTool = 'select' | 'freehand' | 'arrow' | 'rectangle' | 'circle';
+
+export interface ReviewAssetExtended {
+    id: string;
+    title: string;
+    subtitle?: string;
+    videoUrl: string;
+    thumbnail: string;
+    runtime: string;
+    status: 'draft' | 'in_qc' | 'client_review' | 'approved';
+    reviewStatus: ReviewStatus['value'];
+    client: string;
+    platform: string;
+    resolution: string;
+    fileSize: string;
+    uploader: string;
+    uploadDate: string;
+    versions: Version[];
+    currentVersion: string;
+    downloadEnabled: boolean;
+    approvalLocked: boolean;
+    comments: ReviewComment[];
+}
+
+export interface Version {
+    id: string;
+    number: string;
+    thumbnail: string;
+    duration: string;
+    uploadDate: string;
+    status: 'draft' | 'in_qc' | 'client_review' | 'approved';
+}

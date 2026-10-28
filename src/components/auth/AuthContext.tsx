@@ -1,0 +1,407 @@
+// contexts/AuthContext.tsx
+"use client";
+import React, { createContext, useContext, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
+import { SessionExpiredModal } from "@/components/auth/SessionExpiredModal";
+
+interface User {
+  id: string;
+  email: string;
+  name?: string;
+  image?: string;
+  role: string | null;
+  roles?: string[];
+  linkedClientId?: string; // Client ID for users with client role
+  hasPostingServices?: boolean;
+  scriptsRequired?: boolean;
+  // "Google" | "Slack" | "email" — which auth method created/last verified
+  // this session. Used by the pending-role screen's "created via {provider}"
+  // copy; not otherwise relied on for auth decisions.
+  provider?: string;
+}
+
+interface AuthContextType {
+  isAuthenticated: boolean;
+  user: User | null;
+  loading: boolean;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
+  logout: () => Promise<void>;
+  forgotPassword: (email: string) => Promise<void>;
+  resetPassword: (newPassword: string, confirmPassword: string, token: string) => Promise<void>;
+  verifyTwoFactor: (code: string) => Promise<void>;
+  resendTwoFactorCode: () => Promise<void>;
+  handleSessionExpired: () => void;
+  // Re-fetches /api/auth/me and updates `user` in place — e.g. so the
+  // pending-role screen's "Check status" can pick up a newly-assigned
+  // role without a full page reload. Returns the refreshed role (or null).
+  refreshUser: () => Promise<string | null>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// A tiny per-browser hint that this browser had a signed-in session last time.
+// The real check is still /api/auth/me — the hint only decides what to show
+// WHILE that request is in flight: returning users keep the "Loading..." state
+// (no login-form flash), first-time / signed-out visitors get the login form
+// immediately instead of waiting on the server. Never used for auth decisions.
+const SESSION_HINT_KEY = "e8_session_hint";
+
+export function hasSessionHint(): boolean {
+  try {
+    return window.localStorage.getItem(SESSION_HINT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSessionHint(signedIn: boolean) {
+  try {
+    if (signedIn) window.localStorage.setItem(SESSION_HINT_KEY, "1");
+    else window.localStorage.removeItem(SESSION_HINT_KEY);
+  } catch {
+    // storage blocked (private mode etc.) — hint just stays off
+  }
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showSessionExpired, setShowSessionExpired] = useState(false);
+  const [pendingLoginEmail, setPendingLoginEmail] = useState<string | null>(null);
+  const router = useRouter();
+
+  // Track auth state in a ref for the fetch interceptor
+  const authStateRef = React.useRef({ isAuthenticated, user });
+  React.useEffect(() => {
+    authStateRef.current = { isAuthenticated, user };
+  }, [isAuthenticated, user]);
+
+  // Check auth status on mount
+  const refreshUser = React.useCallback(async (): Promise<string | null> => {
+    const res = await fetch("/api/auth/me");
+    if (!res.ok) throw new Error(`auth/me failed: ${res.status}`);
+    const data = await res.json();
+    if (data.user) {
+      setUser(data.user);
+      setIsAuthenticated(true);
+      return data.user.role ?? null;
+    }
+    setUser(null);
+    setIsAuthenticated(false);
+    return null;
+  }, []);
+
+  useEffect(() => {
+    // /api/auth/me can fail transiently (Worker 503 / network blip). That is not
+    // a sign-out, so retry a few times before giving up and showing the login form.
+    let cancelled = false;
+    (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await refreshUser();
+          return;
+        } catch (err) {
+          console.warn(`⚠️ Initial auth check failed (attempt ${attempt + 1}):`, err);
+          if (cancelled || attempt === 2) return;
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        }
+      }
+    })().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshUser]);
+
+  // Browser Back after logging out must not show authenticated pages again.
+  // The browser can restore a page from its back/forward cache (pageshow with
+  // persisted=true) or step through history (popstate) with the old signed-in
+  // UI still in memory, so re-check the real session and bounce to the login
+  // screen if the server says we're signed out. A failed check (offline,
+  // 5xx) is not a sign-out and is ignored.
+  useEffect(() => {
+    let checking = false;
+    const recheckSession = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const res = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.user) {
+          const wasSignedIn = authStateRef.current.isAuthenticated;
+          setUser(null);
+          setIsAuthenticated(false);
+          if (wasSignedIn || window.location.pathname !== "/") router.replace("/");
+        }
+      } catch {
+        // transient — leave state alone
+      } finally {
+        checking = false;
+      }
+    };
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) recheckSession();
+    };
+    const onPopState = () => {
+      recheckSession();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [router]);
+
+  // Keep the hint in step with the real auth result (login, logout, expiry).
+  useEffect(() => {
+    if (!loading) writeSessionHint(isAuthenticated);
+  }, [isAuthenticated, loading]);
+
+  // Global fetch interceptor for JWT expiration
+  useEffect(() => {
+    // 🛑 Prevent double wrapping if multiple instances are mounted
+    if ((window.fetch as any).__isE8Wrapped) {
+      console.warn('⚠️ Fetch is already wrapped, skipping to prevent recursion');
+      return;
+    }
+
+    const originalFetch = window.fetch;
+
+    const wrappedFetch = async (...args: any[]) => {
+      let response: Response;
+
+      try {
+        // Execute the actual fetch using apply to handle arguments correctly
+        response = await (originalFetch as any).apply(window, args);
+      } catch (error) {
+        // Intentional cancellations (component unmount cleanup, request
+        // superseded by a newer one, etc.) are not network failures —
+        // let them propagate as a real AbortError so the caller's own
+        // `if (err.name === 'AbortError') return;` logic can handle it.
+        // Swallowing this into a fake 503 turns harmless cancellations
+        // into visible error states downstream.
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+
+        // Normalize low-level network errors (TypeError: Failed to fetch, CORS, offline, etc.)
+        console.error('Global fetch error:', error);
+        return new Response(
+          JSON.stringify({
+            error: 'network_error',
+            message: error instanceof Error ? error.message : 'Failed to fetch',
+          }),
+          {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+
+      // 🔥 Skip S3/AWS URLs - don't intercept file uploads or guest/public APIs
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url || '';
+      const isPublicUrl =
+        url.includes('s3.amazonaws.com') ||
+        url.includes('amazonaws.com') ||
+        url.includes('r2.cloudflarestorage.com') ||
+        url.includes('r2.dev') ||
+        url.includes('X-Amz-') ||
+        url.includes('.s3.') ||
+        url.includes('/api/shared/') ||
+        (url.includes('/api/tasks/') && (url.includes('/feedback') || url.includes('/status')));
+
+      if (isPublicUrl) {
+        return response;
+      }
+
+      // Clone response to read it without consuming the stream
+      try {
+        const contentType = response.headers.get("content-type");
+
+        // Only parse JSON responses
+        if (contentType && contentType.includes("application/json")) {
+          const clonedResponse = response.clone();
+          const data = await clonedResponse.json();
+
+          // Check for JWT expiration errors (401 Unauthorized or 500 with specific message)
+          if (
+            (response.status === 401 || response.status === 500) &&
+            (data.message?.toLowerCase().includes('jwt expired') ||
+              data.message?.toLowerCase().includes('token expired') ||
+              data.error?.toLowerCase().includes('jwt expired'))
+          ) {
+            // Only show modal if user WAS authenticated
+            if (authStateRef.current.isAuthenticated && !showSessionExpired) {
+              console.log('🚨 Session expired detected in fetch interceptor');
+              setShowSessionExpired(true);
+            }
+          }
+        }
+      } catch (e) {
+        // Response is not JSON or already consumed, ignore
+      }
+
+      return response;
+    };
+
+    // Mark it to prevent double wrapping
+    (wrappedFetch as any).__isE8Wrapped = true;
+    window.fetch = wrappedFetch;
+
+    // Cleanup: restore original fetch
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
+  const login = async (email: string, password: string, rememberMe?: boolean) => {
+    setLoading(true);
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, rememberMe }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setLoading(false);
+      throw new Error(data.message || "Login failed");
+    }
+
+    if (data.otpRequired) {
+      // Password was correct — an email OTP is required before we grant
+      // access. Stash the email and let the UI switch to the code-entry
+      // screen; App.tsx catches this specific error message.
+      setPendingLoginEmail(data.email || email);
+      setLoading(false);
+      throw new Error("2FA_REQUIRED");
+    }
+
+    // issueLoginSession only returns the bare { id, email, role, roles, name }
+    // — it doesn't resolve linkedClientId/hasPostingServices/scriptsRequired.
+    // Using that partial object directly left scriptsRequired `undefined`
+    // right after login (rather than `false`), which made the client
+    // portal's "Scripts" nav item show up for every client until a full
+    // page reload re-fetched /api/auth/me. Refresh from /api/auth/me here
+    // instead so those derived flags are correct immediately.
+    setIsAuthenticated(true);
+    setPendingLoginEmail(null);
+    try {
+      await refreshUser();
+    } catch {
+      setUser(data.user);
+    }
+    setLoading(false);
+  };
+
+  const logout = async () => {
+    try {
+      await fetch("/api/logout", { method: "POST" });
+      await signOut({ redirect: false });
+    } catch (error) {
+      console.error("Logout error:", error);
+    } finally {
+      // Clear auth token cookie
+      document.cookie = 'authToken=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT';
+
+      setUser(null);
+      setIsAuthenticated(false);
+      // replace, not push: keeps the signed-in page out of the Back history
+      router.replace("/");
+    }
+  };
+
+  const handleSessionExpired = () => {
+    setShowSessionExpired(false);
+    logout();
+  };
+
+  const forgotPassword = async (email: string) => { console.log('Forgot password stub:', email); };
+  const resetPassword = async (newPassword: string, confirmPassword: string, token: string) => { console.log('Reset password stub:', token); };
+
+  const verifyTwoFactor = async (code: string) => {
+    if (!pendingLoginEmail) {
+      throw new Error("No login in progress. Please sign in again.");
+    }
+
+    setLoading(true);
+    const res = await fetch("/api/login/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: pendingLoginEmail, otp: code }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setLoading(false);
+      throw new Error(data.message || "Invalid verification code");
+    }
+
+    setIsAuthenticated(true);
+    setPendingLoginEmail(null);
+    try {
+      await refreshUser();
+    } catch {
+      setUser(data.user);
+    }
+    setLoading(false);
+  };
+
+  const resendTwoFactorCode = async () => {
+    if (!pendingLoginEmail) {
+      throw new Error("No login in progress. Please sign in again.");
+    }
+
+    const res = await fetch("/api/login/resend-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: pendingLoginEmail }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.message || "Failed to resend code");
+    }
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        isAuthenticated,
+        user,
+        loading,
+        login,
+        logout,
+        forgotPassword,
+        resetPassword,
+        verifyTwoFactor,
+        resendTwoFactorCode,
+        handleSessionExpired,
+        refreshUser
+      }}
+    >
+      {children}
+
+      {/* Session Expired Modal */}
+      <SessionExpiredModal
+        isOpen={showSessionExpired}
+        onClose={handleSessionExpired}
+      />
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+}

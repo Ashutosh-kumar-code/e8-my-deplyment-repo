@@ -1,0 +1,242 @@
+export const dynamic = 'force-dynamic';
+// src/app/api/upload/initiate/route.ts
+// Auth + DB logic stays here. R2 CreateMultipartUpload goes to file server.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getDbHttp } from '@/lib/db';
+import { client as clientTable, task as taskTable } from '@/lib/db/schema';
+import { eq } from 'drizzle-orm';
+import { initiateMultipart } from '@/lib/file-server';
+import { getClientStorageInfo } from '@/lib/storage-service';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { getCurrentUser2 } from '@/lib/auth';
+import { recordPendingUpload } from '@/lib/drive/index-store';
+import { keepAlive } from '@/lib/keep-alive';
+import { getActiveUploadBackend } from '@/lib/upload-backend';
+
+function normalizeUploadPathSegment(value: string): string {
+  return value
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((part) => part && part !== '.')
+    .join('/');
+}
+
+function inferMimeType(fileName: string): string {
+  const ext = (fileName.split('.').pop() || '').toLowerCase();
+  const map: Record<string, string> = {
+    mov: 'video/quicktime', mp4: 'video/mp4', mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo', webm: 'video/webm', m4v: 'video/x-m4v',
+    mts: 'video/mp2t', m2ts: 'video/mp2t', wmv: 'video/x-ms-wmv',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+    gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function getCurrentMonthFolder(): string {
+  const date = new Date();
+  const month = date.toLocaleDateString('en-US', { month: 'long' });
+  const year = date.getFullYear();
+  return `${month}-${year}`;
+}
+
+export async function POST(req: NextRequest) {
+  const db = getDbHttp();
+  const { env } = getCloudflareContext();
+  try {
+    // 🔒 This route previously had NO auth check at all — any request,
+    // authenticated or not, could get a presigned upload URL into any
+    // task's R2 folder. Login is required for every real upload path, so
+    // this was always a gap, not a deliberate allowance.
+    const currentUser = await getCurrentUser2(req);
+    if (!currentUser) {
+      return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const {
+      fileName,
+      fileType,
+      fileSize,
+      taskId,
+      clientId,
+      folderType,
+      taskTitle,
+      subfolder,
+      relativePath,
+    } = body;
+
+    if (!fileName || !taskId || !clientId) {
+      return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
+    }
+
+    // 🔒 Video editor vs thumbnail editor — a task can have a separate
+    // editor assigned to each (Task.assignedTo = main video, .thumbnailEditor
+    // = thumbnail). Neither may upload into the other's folder. Only checked
+    // for real task deliverable uploads (folderType 'outputs'), and only
+    // enforced for the 'editor' role — admin/manager can always upload.
+    if (folderType === 'outputs' && taskId !== 'drive-upload') {
+      const [taskRow] = await db
+        .select({ assignedTo: taskTable.assignedTo, thumbnailEditor: taskTable.thumbnailEditor })
+        .from(taskTable)
+        .where(eq(taskTable.id, taskId))
+        .limit(1);
+
+      const role = (currentUser.role || '').toLowerCase();
+      if (taskRow && role === 'editor') {
+        const currentUserId = Number(currentUser.id);
+        const isThumbnailUpload = subfolder === 'thumbnails';
+        const allowed = isThumbnailUpload
+          ? currentUserId === taskRow.thumbnailEditor || (!taskRow.thumbnailEditor && currentUserId === taskRow.assignedTo)
+          : currentUserId === taskRow.assignedTo;
+
+        if (!allowed) {
+          return NextResponse.json(
+            {
+              message: isThumbnailUpload
+                ? 'Only the editor assigned to the thumbnail can upload it for this task.'
+                : 'Only the editor assigned to the main video can upload it for this task.',
+            },
+            { status: 403 }
+          );
+        }
+      }
+    }
+
+    // Infer MIME type from filename if browser didn't provide one (common for .mov folder uploads)
+    const resolvedFileType = fileType || inferMimeType(fileName);
+
+    // ── Storage limit check for raw-footage uploads ──────────────────────────
+    const isRawFootageUpload =
+      folderType === 'rawFootage' ||
+      (folderType === 'drive' && subfolder?.includes('raw-footage'));
+
+    if (isRawFootageUpload && clientId && clientId !== 'unknown') {
+      const storageInfo = await getClientStorageInfo(clientId);
+      const projectedUsage = storageInfo.used + (fileSize || 0);
+      if (projectedUsage > storageInfo.limit || storageInfo.isAtLimit) {
+        return NextResponse.json(
+          {
+            message: storageInfo.isAtLimit
+              ? 'Storage limit reached. Please upgrade your plan.'
+              : 'Storage limit exceeded',
+            error: storageInfo.isAtLimit ? 'STORAGE_LIMIT_REACHED' : 'STORAGE_LIMIT_EXCEEDED',
+            storageInfo: {
+              used: storageInfo.usedFormatted,
+              limit: storageInfo.limitFormatted,
+              percentage: storageInfo.percentage,
+            },
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // ── Resolve company name ─────────────────────────────────────────────────
+    let companyName = '';
+    if (folderType !== 'drive') {
+      if (!clientId) {
+        return NextResponse.json({ message: 'Missing clientId' }, { status: 400 });
+      }
+      const [client] = await db
+        .select({ companyName: clientTable.companyName, name: clientTable.name })
+        .from(clientTable)
+        .where(eq(clientTable.id, clientId))
+        .limit(1);
+      if (!client) {
+        return NextResponse.json({ message: 'Client not found' }, { status: 404 });
+      }
+      companyName = client.companyName || client.name;
+    }
+
+    // ── Build S3 key ─────────────────────────────────────────────────────────
+    let s3Key: string;
+    const currentMonth = getCurrentMonthFolder();
+
+    if (folderType === 'outputs') {
+      if (!taskTitle) {
+        return NextResponse.json(
+          { message: 'Task title required for outputs upload' },
+          { status: 400 }
+        );
+      }
+      const taskFolderPath = `${companyName}/outputs/${currentMonth}/${taskTitle}/`;
+      if (subfolder && subfolder.trim() !== '' && subfolder !== 'main') {
+        s3Key = `${taskFolderPath}${subfolder}/${Date.now()}-${fileName}`;
+      } else {
+        s3Key = `${taskFolderPath}${Date.now()}-${fileName}`;
+      }
+    } else if (folderType === 'rawFootage') {
+      s3Key = `${companyName}/raw-footage/${currentMonth}/${Date.now()}-${fileName}`;
+    } else if (folderType === 'essentials') {
+      s3Key = `${companyName}/elements/${Date.now()}-${fileName}`;
+    } else if (folderType === 'drive') {
+      let drivePath = normalizeUploadPathSegment(subfolder || '');
+      if (drivePath !== '' && !drivePath.endsWith('/')) drivePath += '/';
+      if (relativePath) {
+        const safeRelativePath = normalizeUploadPathSegment(relativePath);
+        s3Key = `${drivePath}${safeRelativePath}`;
+      } else {
+        s3Key = `${drivePath}${fileName}`;
+      }
+    } else {
+      return NextResponse.json({ message: 'Invalid folder type' }, { status: 400 });
+    }
+
+    // ── Backup upload system ──────────────────────────────────────────────
+    // Read the admin's Primary/Backup switch ONCE per upload, here at
+    // initiate time — not re-checked per part or on complete — so a single
+    // upload never gets split across both buckets mid-flight even if
+    // someone flips the switch while it's in progress. The client is
+    // handed `backend` back and must echo it on every subsequent
+    // /api/upload/part-urls and /api/upload/complete call for this upload.
+    // In scope for now: raw footage and editor output uploads only — see
+    // /areas/cloudflare-migration.md for why (Files & Drive browser
+    // uploads, thumbnails/previews and QC/client streaming are unaffected
+    // by this switch and keep depending on the primary bucket).
+    const isBackupEligible = folderType === 'outputs' || folderType === 'rawFootage';
+    const uploadBackend = isBackupEligible ? await getActiveUploadBackend() : 'r2';
+
+    console.log(`🎯 Initiating multipart via file server for key: ${s3Key} (backend: ${uploadBackend})`);
+
+    // ── Delegate CreateMultipartUpload to file server ────────────────────────
+    try {
+      const { uploadId, key } = await initiateMultipart(
+        env,
+        clientId,
+        'uploader',
+        s3Key,
+        resolvedFileType,
+        fileSize,
+        uploadBackend,
+      );
+      // Drive index: remember who's uploading this key (R2's create event,
+      // which is what actually adds it to the index, doesn't carry a user).
+      // Only meaningful for the primary bucket — the Drive index tracks
+      // what's browsable in Files & Drive, which backup-bucket files aren't
+      // until migration copies them over.
+      if (uploadBackend !== 'backup') {
+        keepAlive(recordPendingUpload(key || s3Key, currentUser.id, resolvedFileType));
+      }
+      return NextResponse.json({ uploadId, key, backend: uploadBackend });
+    } catch (err: any) {
+      // File server returns USE_SINGLE_PUT for files < 16MB — fall back to presigned PUT
+      if (err.Code === 'USE_SINGLE_PUT' || err.message?.includes('USE_SINGLE_PUT') || err.message?.includes('too small')) {
+        const { presignUpload } = await import('@/lib/file-server');
+        const { uploadUrl, fileUrl } = await presignUpload(env, clientId, 'uploader', s3Key, resolvedFileType, uploadBackend);
+        if (uploadBackend !== 'backup') {
+          keepAlive(recordPendingUpload(s3Key, currentUser.id, resolvedFileType));
+        }
+        return NextResponse.json({ singlePut: true, uploadUrl, fileUrl, key: s3Key, backend: uploadBackend });
+      }
+      throw err;
+    }
+  } catch (error: any) {
+    console.error('❌ Initiate upload error:', error);
+    return NextResponse.json(
+      { message: error.message || 'Failed to initiate upload' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,332 @@
+'use client';
+
+import { useState, memo } from 'react';
+import { ReviewComment as ReviewCommentType, COMMENT_CATEGORIES, CommentCategory, THUMBNAIL_CATEGORIES } from './types';
+import { getRevisionMediaUrl } from './RevisionMedia';
+import { MessageSquare, Check, Reply, MoreHorizontal, Trash2, Mic, File as FileIcon, Image as ImageIcon, Download } from 'lucide-react';
+import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
+
+interface ReviewCommentProps {
+    comment: ReviewCommentType;
+    isActive?: boolean;
+    onTimestampClick: (timestampSeconds: number) => void;
+    onResolve: (commentId: string, resolved: boolean) => void;
+    onReply?: (commentId: string) => void;
+    onDelete?: (commentId: string) => void;
+    onEdit?: (commentId: string, newContent: string) => void;
+}
+
+export const ReviewCommentCard = memo(function ReviewCommentCard({
+    comment,
+    isActive = false,
+    onTimestampClick,
+    onResolve,
+    onReply,
+    onDelete,
+    onEdit,
+}: ReviewCommentProps) {
+    const [showReplies, setShowReplies] = useState(false);
+    const [isEditing, setIsEditing] = useState(false);
+    const [tempContent, setTempContent] = useState(comment.content);
+
+    const categories = (Array.isArray(comment.category) ? comment.category : [comment.category])
+        .filter(Boolean)
+        .map((v) => {
+            const found = COMMENT_CATEGORIES.find((c) => c.value === v) || THUMBNAIL_CATEGORIES.find((c) => c.value === v);
+            if (found) return found;
+            return {
+                label: String(v).toUpperCase(),
+                value: String(v),
+                color: '#71717a',
+            };
+        });
+
+    const handleEditSave = () => {
+        if (tempContent.trim() && onEdit) {
+            onEdit(comment.id, tempContent);
+            setIsEditing(false);
+        }
+    };
+
+    const formatTimeAgo = (date: Date) => {
+        const now = new Date();
+        const diffMs = now.getTime() - new Date(date).getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        return `${diffDays}d ago`;
+    };
+
+    const formatFileSize = (bytes: number) => {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    };
+
+    return (
+        <div
+            className={`review-comment p-3 mb-2 review-animate-fade-in ${isActive ? 'active' : ''}`}
+        >
+            {/* Header */}
+            <div className="flex items-start justify-between mb-2">
+                <div className="flex items-center gap-2">
+                    {/* Avatar */}
+                    <div className="w-7 h-7 rounded-full bg-[var(--review-v2-gray-700)] flex items-center justify-center text-xs font-medium text-white">
+                        {comment.authorName.charAt(0).toUpperCase()}
+                    </div>
+
+                    {/* Author & Time */}
+                    <div>
+                        <div className="text-sm font-medium text-white">{comment.authorName}</div>
+                        <div className="text-xs text-[var(--review-text-muted)]">
+                            {formatTimeAgo(comment.createdAt)}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 w-6 p-0 text-[var(--review-text-muted)] hover:text-white hover:bg-[var(--review-bg-elevated)]"
+                            >
+                                <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="bg-[var(--review-bg-elevated)] border-[var(--review-border)]">
+                            {onReply && !isEditing && (
+                                <DropdownMenuItem
+                                    onClick={() => onReply(comment.id)}
+                                    className="text-[var(--review-text-secondary)] hover:text-white hover:bg-[var(--review-bg-tertiary)]"
+                                >
+                                    <Reply className="h-4 w-4 mr-2" />
+                                    Reply
+                                </DropdownMenuItem>
+                            )}
+                            {onEdit && !isEditing && (
+                                <DropdownMenuItem
+                                    onClick={() => {
+                                        setTempContent(comment.content);
+                                        setIsEditing(true);
+                                    }}
+                                    className="text-[var(--review-text-secondary)] hover:text-white hover:bg-[var(--review-bg-tertiary)]"
+                                >
+                                    <MessageSquare className="h-4 w-4 mr-2" />
+                                    Edit
+                                </DropdownMenuItem>
+                            )}
+                            {onDelete && (
+                                <DropdownMenuItem
+                                    onClick={() => onDelete(comment.id)}
+                                    className="text-red-400 hover:text-red-300 hover:bg-[var(--review-bg-tertiary)]"
+                                >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete
+                                </DropdownMenuItem>
+                            )}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
+            </div>
+
+            {/* Timestamp & Category */}
+            <div className="flex items-center gap-2 mb-2">
+                {comment.thumbnailIndex !== undefined ? (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded bg-white text-black leading-none select-none">
+                        #{comment.thumbnailIndex}
+                    </span>
+                ) : comment.isGeneral ? (
+                    <span className="review-comment-timestamp opacity-80">
+                        General
+                    </span>
+                ) : (
+                    <button
+                        onClick={() => onTimestampClick(comment.timestampSeconds)}
+                        className="review-comment-timestamp"
+                    >
+                        @{comment.timestamp}
+                        {comment.endTimestamp && (
+                            <span className="text-[var(--review-text-muted)]"> – {comment.endTimestamp}</span>
+                        )}
+                    </button>
+                )}
+
+                {comment.version && (
+                    <Badge variant="outline" className="text-[10px] h-5 bg-white/5 border-white/10 text-[var(--review-text-secondary)]">
+                        V{comment.version}
+                    </Badge>
+                )}
+
+                {categories.map((cat) => (
+                    <span
+                        key={cat.value}
+                        className="review-category-pill"
+                        data-category={cat.value}
+                    >
+                        {cat.label}
+                    </span>
+                ))}
+            </div>
+
+            {/* Content */}
+            {isEditing ? (
+                <div className="space-y-2 mb-3">
+                    <textarea
+                        className="w-full bg-[var(--review-bg-tertiary)] border border-[var(--review-border)] rounded p-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[var(--review-v2-gray-400)] min-h-[80px]"
+                        value={tempContent}
+                        onChange={(e) => setTempContent(e.target.value)}
+                        autoFocus
+                    />
+                    <div className="flex justify-end gap-2">
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-xs h-7 text-[var(--review-text-muted)] hover:text-white"
+                            onClick={() => setIsEditing(false)}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            size="sm"
+                            className="text-xs h-7 bg-[var(--review-v2-gray-50)] hover:opacity-85 text-[var(--review-v2-gray-950)] text-white"
+                            onClick={handleEditSave}
+                        >
+                            Save
+                        </Button>
+                    </div>
+                </div>
+            ) : (
+                <p className="text-sm text-[var(--review-text-secondary)] mb-3 leading-relaxed">
+                    {comment.content}
+                </p>
+            )}
+
+            {/* Captured Screenshot (may include a hand-drawn annotation flattened in) */}
+            {comment.screenshotUrl && (
+                <div className="mb-4 rounded-lg overflow-hidden border border-white/5 bg-black/20 group cursor-zoom-in">
+                    <img
+                        src={getRevisionMediaUrl(comment.screenshotUrl)}
+                        alt="Captured video frame"
+                        className="w-full h-auto object-cover max-h-[200px] transition-transform duration-500 group-hover:scale-105"
+                        onClick={() => window.open(getRevisionMediaUrl(comment.screenshotUrl!), '_blank')}
+                    />
+                </div>
+            )}
+
+            {/* Voice comment */}
+            {comment.voiceUrl && (
+                <div className="mb-3 flex items-center gap-2 bg-black/20 border border-white/5 rounded-lg px-2 py-1.5">
+                    <Mic className="h-3.5 w-3.5 text-[var(--review-v2-gray-300)] shrink-0" />
+                    <audio controls src={getRevisionMediaUrl(comment.voiceUrl)} className="h-8 w-full" />
+                    {!!comment.voiceDurationSec && (
+                        <span className="text-[10px] text-[var(--review-text-muted)] font-mono shrink-0">
+                            {Math.floor(comment.voiceDurationSec / 60)}:{(comment.voiceDurationSec % 60).toString().padStart(2, '0')}
+                        </span>
+                    )}
+                </div>
+            )}
+
+            {/* File / image attachments */}
+            {comment.attachments && comment.attachments.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                    {comment.attachments.map((att, idx) => {
+                        const isImage = att.mimeType?.startsWith('image/');
+                        if (isImage) {
+                            return (
+                                <a
+                                    key={`${att.url}-${idx}`}
+                                    href={getRevisionMediaUrl(att.url)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="block w-16 h-16 rounded border border-white/10 overflow-hidden hover:border-[var(--review-v2-gray-500)] transition-colors"
+                                    title={att.name}
+                                >
+                                    <img src={getRevisionMediaUrl(att.url)} alt={att.name} className="w-full h-full object-cover" />
+                                </a>
+                            );
+                        }
+                        return (
+                            <a
+                                key={`${att.url}-${idx}`}
+                                href={getRevisionMediaUrl(att.url)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1.5 bg-black/20 border border-white/5 hover:border-[var(--review-v2-gray-500)] rounded-lg pl-2 pr-2 py-1 transition-colors"
+                                title={`Download ${att.name}`}
+                            >
+                                <FileIcon className="h-3.5 w-3.5 text-[var(--review-text-muted)] shrink-0" />
+                                <span className="text-xs text-[var(--review-text-secondary)] max-w-[120px] truncate">{att.name}</span>
+                                <span className="text-[10px] text-[var(--review-text-muted)] shrink-0">{formatFileSize(att.size)}</span>
+                                <Download className="h-3 w-3 text-[var(--review-text-muted)] shrink-0" />
+                            </a>
+                        );
+                    })}
+                </div>
+            )}
+
+
+            {/* Footer */}
+            <div className="flex items-center justify-between">
+                {/* Resolve Checkbox */}
+                <label className="flex items-center gap-2 cursor-pointer group">
+                    <input
+                        type="checkbox"
+                        checked={comment.resolved}
+                        onChange={(e) => onResolve(comment.id, e.target.checked)}
+                        className="review-resolve-checkbox"
+                    />
+                    <span className={`text-xs ${comment.resolved ? 'text-[var(--review-status-approved)]' : 'text-[var(--review-text-muted)] group-hover:text-[var(--review-text-secondary)]'}`}>
+                        {comment.resolved ? 'Resolved' : 'Mark as resolved'}
+                    </span>
+                </label>
+
+                {/* Reply count */}
+                {comment.replies && comment.replies.length > 0 && (
+                    <button
+                        onClick={() => setShowReplies(!showReplies)}
+                        className="flex items-center gap-1 text-xs text-[var(--review-text-muted)] hover:text-[var(--review-v2-gray-300)]"
+                    >
+                        <MessageSquare className="h-3 w-3" />
+                        {comment.replies.length} {comment.replies.length === 1 ? 'reply' : 'replies'}
+                    </button>
+                )}
+            </div>
+
+            {/* Nested Replies */}
+            {showReplies && comment.replies && comment.replies.length > 0 && (
+                <div className="mt-3 pl-4 border-l-2 border-[var(--review-border)] space-y-2">
+                    {comment.replies.map((reply) => (
+                        <div key={reply.id} className="text-sm">
+                            <div className="flex items-center gap-2 mb-1">
+                                <div className="w-5 h-5 rounded-full bg-[var(--review-v2-gray-700)] flex items-center justify-center text-[10px] font-medium text-white">
+                                    {reply.authorName.charAt(0).toUpperCase()}
+                                </div>
+                                <span className="text-xs font-medium text-white">{reply.authorName}</span>
+                                <span className="text-xs text-[var(--review-text-muted)]">
+                                    {formatTimeAgo(reply.createdAt)}
+                                </span>
+                            </div>
+                            <p className="text-xs text-[var(--review-text-secondary)] ml-7">
+                                {reply.content}
+                            </p>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+});

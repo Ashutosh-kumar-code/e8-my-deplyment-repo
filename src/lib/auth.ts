@@ -1,0 +1,247 @@
+// lib/auth.ts
+import { NextApiRequest, NextApiResponse } from 'next';
+import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import jwt from "jsonwebtoken";
+import { cookies } from "next/headers";
+import { getDbHttp } from '@/lib/db';
+import { user as userTable, client as clientTable } from '@/lib/db/schema';
+import { eq } from 'drizzle-orm';
+
+export const verifyToken = (token: string) => {
+  try {
+    // const verified = jwt.verify(token, process.env.JWT_SECRET || "");
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET not configured");
+    }
+    const verified = jwt.verify(token, process.env.JWT_SECRET);
+    // console.log("Verified Token:", verified);
+    return verified as { userId: number; email: string; iat: number; exp: number };
+  } catch {
+    return null;
+  }
+};
+
+// Async version if cookies() returns a Promise
+export async function getUser(req: Request) {
+  function getTokenFromCookies(req: Request) {
+    const cookieHeader = req.headers.get("cookie");
+    if (!cookieHeader) return null;
+    const match = cookieHeader.match(/authToken=([^;]+)/);
+    return match ? match[1] : null;
+  }
+
+  const token = getTokenFromCookies(req);
+  if (!token)
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+
+  const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+  return decoded; // should contain id, email, role
+}
+
+export async function getTokenFromCookies(req: Request) {
+  const cookieHeader = req.headers.get("cookie");
+  if (!cookieHeader) return null;
+
+  const match = cookieHeader.match(/authToken=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+// export async function requireAdmin(req: NextRequest) {
+//   try{
+//   const authHeader = req.headers.get('authorization');
+//   const token = authHeader?.split(' ')[1];
+//   if (!token) return null;
+//   // Mock token validation for now (replace with real JWT verification)
+//   const user = await prisma.user.findUnique({ where: { id: Number(token) } });
+
+//   if (!user || user.role !== 'admin') return null;
+
+//   return user;
+// } catch (err) {
+//     console.error('requireAdmin error:', err);
+//     return null;
+//   }
+// }
+
+// export async function requireAdmin(req: NextRequest) {
+//   console.log("requireAdmin called");
+//   try {
+//     // ✅ Get token from cookie instead of Authorization header
+//     const token = req.cookies.get("authToken")?.value;
+//     if (!token) return null;
+//     console.log("JWT Token:", token);
+
+//     const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+//     console.log("Decoded JWT:", decoded);
+
+//     const user = await prisma.user.findUnique({
+//       where: { email: decoded.email },
+//     });
+//     console.log("User from DB:", user);
+
+//     // Allow both admin and manager
+//     if (!user || (user.role !== "admin" && user.role !== "manager")) {
+//       return null;
+//     }
+
+//     return user; // return the user object
+//   } catch (err) {
+//     console.error("requireAdmin error:", err);
+//     return null;
+//   }
+// }
+
+
+export async function getCurrentUser(req: NextRequest) {
+  try {
+    const token = req.headers.get("Authorization")?.split(" ")[1];
+    if (!token) return null;
+
+    const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+    return decoded; // should contain id, email, role
+  } catch {
+    return null;
+  }
+}
+
+type Decoded = { userId: string; email: string; role?: string; name?: string };
+
+import { auth } from "@/auth";
+
+export async function getCurrentUser2(req?: NextRequest) {
+  const db = getDbHttp();
+  try {
+    // 1. Try Custom JWT Token (Cookie or Header)
+    const cookieToken = req
+      ? req.cookies.get("authToken")?.value
+      : (await cookies()).get("authToken")?.value;
+
+    const headerToken = req?.headers.get("authorization")?.split(" ")[1];
+    const token = cookieToken || headerToken;
+
+    if (token && process.env.JWT_SECRET) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET) as any;
+        // Support both custom 'userId' and NextAuth's 'id' field
+        const effectiveId = decoded?.userId || decoded?.id;
+
+        if (effectiveId) {
+          const [foundUser] = await db
+            .select()
+            .from(userTable)
+            .where(eq(userTable.id, Number(effectiveId)))
+            .limit(1);
+          if (foundUser) return foundUser;
+        }
+      } catch (jwtErr) {
+        // Fall through to NextAuth
+      }
+    }
+
+    // 2. Try NextAuth Session (Google/Slack)
+    const session = await auth();
+    if (session?.user?.email) {
+      const [foundUser] = await db
+        .select()
+        .from(userTable)
+        .where(eq(userTable.email, session.user.email))
+        .limit(1);
+      if (foundUser && (foundUser.employeeStatus === 'ACTIVE' || foundUser.email === 'sahilsagvekar230@gmail.com')) return foundUser;
+    }
+
+    return null;
+  } catch (err) {
+    console.error("getCurrentUser error:", err);
+    return null;
+  }
+}
+
+export function getUserFromRequest(req: Request) {
+  const cookieHeader = req.headers.get("cookie");
+  if (!cookieHeader) return null;
+
+  const match = cookieHeader.match(/authToken=([^;]+)/);
+  if (!match) return null;
+
+  const token = match[1];
+
+  try {
+    // const decoded = jwt.verify(token, process.env.JWT_SECRET || "your_jwt_secret");
+
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET not configured");
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return decoded; // must contain userId inside it
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function requireAdmin(req: NextRequest) {
+  const user = await getCurrentUser2(req);
+  if (!user) {
+    throw { status: 401, message: "Unauthorized" };
+  }
+
+  if (user.employeeStatus !== 'ACTIVE' && user.email !== 'sahilsagvekar230@gmail.com') {
+    throw { status: 403, message: "Account deactivated" };
+  }
+
+  const userRole = user.role?.toLowerCase();
+  if (userRole !== "admin" && userRole !== "manager") {
+    throw { status: 403, message: "Admin required" };
+  }
+  return user;
+}
+
+export async function getRequestingUser(req: NextRequest) {
+  const db = getDbHttp();
+  const userId = Number(req.headers.get('x-user-id'));
+  if (!userId) return null;
+  const [foundUser] = await db
+    .select()
+    .from(userTable)
+    .where(eq(userTable.id, userId))
+    .limit(1);
+  return foundUser ?? null;
+}
+
+export function isEmployee(user: { role: string } | null) {
+  if (!user) return false;
+  return user.role !== 'admin' && user.role !== 'client';
+}
+
+/**
+ * Resolves the Client ID for a given user.
+ *
+ * Strategy (with backward compatibility):
+ *   1. Check user.linkedClientId (new multi-user method)
+ *   2. Fallback: Check Client.userId (old 1:1 method)
+ *
+ * This ensures ALL users linked to the same client resolve to the same clientId,
+ * regardless of which linking method was used.
+ */
+export async function resolveClientIdForUser(userId: number): Promise<string | null> {
+  const db = getDbHttp();
+  // Method 1: Check linkedClientId on the User record (preferred, supports multi-user)
+  const [foundUser] = await db
+    .select({ linkedClientId: userTable.linkedClientId })
+    .from(userTable)
+    .where(eq(userTable.id, userId))
+    .limit(1);
+
+  if (foundUser?.linkedClientId) {
+    return foundUser.linkedClientId;
+  }
+
+  // Method 2: Fallback to old Client.userId (1:1 relation, backward compat)
+  const [clientByUserId] = await db
+    .select({ id: clientTable.id })
+    .from(clientTable)
+    .where(eq(clientTable.userId, userId))
+    .limit(1);
+
+  return clientByUserId?.id || null;
+}

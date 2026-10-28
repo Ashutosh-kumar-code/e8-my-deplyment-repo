@@ -1,0 +1,382 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import {
+  Briefcase,
+  Calendar,
+  DollarSign,
+  Clock,
+  User,
+  Mail,
+  Phone,
+  ArrowRight,
+  FileText,
+  // CheckCircle,
+  // XCircle,
+  // AlertCircle,
+  Download,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "./auth/AuthContext";
+import { formatPhone } from "@/lib/formatPhone";
+
+interface EmploymentInfoProps {
+  currentRole?: string;
+}
+
+export function EmploymentInfo({ currentRole }: EmploymentInfoProps) {
+  const [employee, setEmployee] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(true);
+  const router = useRouter();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    fetchEmployeeInfo();
+  }, []);
+
+  useEffect(() => {
+    if (employee?.id) fetchDocuments(employee.id);
+  }, [employee?.id]);
+
+  const fetchDocuments = async (employeeId: number) => {
+    try {
+      setLoadingDocuments(true);
+      const response = await fetch(`/api/employee/${employeeId}/documents`, {
+        credentials: "include",
+      });
+      const data = await response.json();
+      setDocuments(data.documents || []);
+    } catch (err) {
+      console.error("Failed to fetch documents:", err);
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+
+  const handleDownloadDocument = async (docId: string) => {
+    if (!employee?.id) return;
+    try {
+      const response = await fetch(
+        `/api/employee/${employee.id}/documents/${docId}/download`,
+        { credentials: "include" }
+      );
+      const data = await response.json();
+      if (data.url) window.open(data.url, "_blank");
+    } catch (err) {
+      console.error("Failed to get download link:", err);
+    }
+  };
+
+  const fetchEmployeeInfo = async () => {
+    try {
+      setLoading(true);
+
+      const response = await fetch("/api/profile", {
+        credentials: "include",
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.data) {
+        setEmployee(data.data);
+      } else {
+        console.error("Failed to fetch employee info:", data.error);
+      }
+    } catch (err) {
+      console.error("Failed to fetch employee info:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-8">
+        <div className="text-center text-muted-foreground">
+          Loading employment information...
+        </div>
+      </div>
+    );
+  }
+
+  if (!employee) {
+    return (
+      <div className="p-8">
+        <div className="text-center text-muted-foreground">
+          Unable to load employment information
+        </div>
+      </div>
+    );
+  }
+
+  // Show leave request buttons for all non-admin roles (editor, qc, scheduler, etc.)
+  const showRequestLeave = currentRole && currentRole !== "admin";
+  
+  // Handle button clicks with proper error handling
+  const handleRequestLeaveClick = () => {
+    try {
+      router.push("/leave-request");
+    } catch (error) {
+      console.error("Failed to navigate to leave-request:", error);
+      window.location.href = "/leave-request";
+    }
+  };
+
+  const handleViewLeavesClick = () => {
+    try {
+      router.push("/leave-requests");
+    } catch (error) {
+      console.error("Failed to navigate to leave-requests:", error);
+      window.location.href = "/leave-requests";
+    }
+  };
+
+  return (
+    <div className="space-y-4 sm:space-y-6 p-4 sm:p-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 pb-6 border-b border-gray-200">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Employment Information</h1>
+          <p className="text-muted-foreground mt-1 text-lg">
+            View your employment details and manage leave requests
+          </p>
+        </div>
+      </div>
+
+      {/* Employee Profile Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <User className="h-5 w-5" />
+            Employee Profile
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 sm:space-y-6">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <Avatar className="w-16 h-16 sm:w-20 sm:h-20">
+              <AvatarImage src={employee.image || ""} />
+              <AvatarFallback className="text-base sm:text-lg">
+                {employee.name?.charAt(0) || "U"}
+              </AvatarFallback>
+            </Avatar>
+            <div>
+              <h3 className="text-lg sm:text-xl font-semibold">
+                {employee.name || "N/A"}
+              </h3>
+              <p className="text-sm sm:text-base text-muted-foreground">
+                {employee.role || "N/A"}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Mail className="h-4 w-4" />
+                Email
+              </div>
+              <p className="font-medium">{employee.email || "N/A"}</p>
+            </div>
+
+            {employee.phone && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Phone className="h-4 w-4" />
+                  Phone
+                </div>
+                <p className="font-medium">{formatPhone(employee.phone)}</p>
+              </div>
+            )}
+
+            {employee.joinedAt && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Calendar className="h-4 w-4" />
+                  Join Date
+                </div>
+                <p className="font-medium">
+                  {new Date(employee.joinedAt).toLocaleDateString()}
+                </p>
+              </div>
+            )}
+
+            {employee.employeeStatus && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Briefcase className="h-4 w-4" />
+                  Status
+                </div>
+                <p className="font-medium capitalize">
+                  {employee.employeeStatus.toLowerCase()}
+                </p>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Employment Details Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Briefcase className="h-5 w-5" />
+            Employment Details
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+            {employee.hourlyRate && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <DollarSign className="h-4 w-4" />
+                  Hourly Rate
+                </div>
+                <p className="text-lg font-semibold">
+                  ${Number(employee.hourlyRate).toFixed(2)}/hr
+                </p>
+              </div>
+            )}
+
+            {employee.monthlyRate && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <DollarSign className="h-4 w-4" />
+                  Monthly Rate
+                </div>
+                <p className="text-lg font-semibold">
+                  ${employee.monthlyRate.toLocaleString()}
+                </p>
+              </div>
+            )}
+
+            {employee.hoursPerWeek && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Clock className="h-4 w-4" />
+                  Hours Per Week
+                </div>
+                <p className="text-lg font-semibold">
+                  {Number(employee.hoursPerWeek)} hours
+                </p>
+              </div>
+            )}
+
+            {employee.monthlyBaseHours && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Clock className="h-4 w-4" />
+                  Monthly Base Hours
+                </div>
+                <p className="text-lg font-semibold">
+                  {employee.monthlyBaseHours} hours
+                </p>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* My Documents Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5" />
+            My Documents
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loadingDocuments ? (
+            <p className="text-sm text-muted-foreground">Loading documents...</p>
+          ) : documents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No documents have been uploaded for you yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {documents.map((doc) => (
+                <div
+                  key={doc.id}
+                  className="flex items-center justify-between bg-muted rounded-md px-3 py-2 sm:px-4 sm:py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{doc.title}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {doc.fileName} · {(doc.fileSize / 1024).toFixed(0)} KB ·{" "}
+                      {new Date(doc.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => handleDownloadDocument(doc.id)}
+                  >
+                    <Download className="h-3.5 w-3.5 mr-1.5" />
+                    Download
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Request Leave Card - Only for non-admin roles */}
+      {showRequestLeave && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5" />
+              Leave Management
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground mb-4">
+              Submit a leave request for approval. You can select dates and
+              provide a reason for your absence.
+            </p>
+            <Button
+              type="button"
+              onClick={handleRequestLeaveClick}
+              className="w-full sm:w-auto"
+            >
+              Request Leave
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Leave Requests List - Only for non-admin roles */}
+      {showRequestLeave && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Leave Requests
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground mb-4">
+              View all your leave requests and their approval status. Track
+              pending, approved, and rejected requests.
+            </p>
+            <Button
+              type="button"
+              onClick={handleViewLeavesClick}
+              className="w-full sm:w-auto"
+            >
+              View Leave Requests
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

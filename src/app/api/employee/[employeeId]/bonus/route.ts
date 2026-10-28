@@ -1,0 +1,50 @@
+export const dynamic = 'force-dynamic';
+import { NextResponse } from "next/server";
+import { getDbHttp } from "@/lib/db";
+import { bonus } from "@/lib/db/schema";
+import { z } from "zod";
+import { requireAdmin } from "@/lib/auth";
+
+const BonusSchema = z.object({
+  amount: z.number().positive(),
+  addedBy: z.number().optional(), // or use req user id
+});
+
+export async function POST(req: Request, context: { params: { employeeId: string } }) {
+  const db = getDbHttp();
+  try {
+    await requireAdmin(req as any);
+    const { params } = await Promise.resolve(context);
+    const employeeId = Number(params.employeeId);
+    const body = BonusSchema.parse(await req.json());
+
+    const [createdBonus] = await db.insert(bonus).values({
+      employeeId,
+      amount: String(body.amount),
+      addedBy: body.addedBy ?? null,
+    }).returning();
+
+    // 🔥 Audit bonus creation
+    const { createAuditLog, AuditAction } = await import('@/lib/audit-logger');
+    await createAuditLog({
+      userId: employeeId,
+      action: AuditAction.USER_UPDATED,
+      entity: 'Bonus',
+      entityId: createdBonus.id,
+      details: `Admin added bonus of $${body.amount} to employee ${employeeId}`,
+      metadata: {
+        employeeId,
+        bonusAmount: body.amount,
+        addedBy: body.addedBy
+      }
+    });
+
+    return NextResponse.json({ ok: true, bonus: createdBonus });
+  } catch (err: any) {
+    console.error(err);
+    return NextResponse.json(
+      { ok: false, message: err?.message || "Something went wrong" },
+      { status: 400 }
+    );
+  }
+}

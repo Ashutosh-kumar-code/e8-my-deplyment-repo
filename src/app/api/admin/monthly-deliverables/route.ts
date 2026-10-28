@@ -1,0 +1,332 @@
+export const dynamic = 'force-dynamic';
+import { NextRequest, NextResponse } from 'next/server';
+import { getDbHttp } from '@/lib/db';
+import {
+  client as clientTable,
+  task as taskTable,
+  user as userTable,
+} from '@/lib/db/schema';
+import { and, eq, gte, inArray, asc } from 'drizzle-orm';
+import { getUserFromToken, requireAdmin } from '@/lib/auth-helpers';
+
+// Helper to get month key (YYYY-MM format)
+function getMonthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Helper to get month name
+function getMonthName(monthKey: string): string {
+  const [year, month] = monthKey.split('-');
+  const date = new Date(parseInt(year), parseInt(month) - 1);
+  return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+export async function GET(req: NextRequest) {
+  const db = getDbHttp();
+  try {
+    const currentUser = getUserFromToken(req);
+    const authError = requireAdmin(currentUser);
+
+    if (authError) {
+      return NextResponse.json(
+        { ok: false, message: authError.error },
+        { status: authError.status }
+      );
+    }
+
+    const url = new URL(req.url);
+    const selectedMonth = url.searchParams.get('month'); // YYYY-MM format
+    const view = url.searchParams.get('view') || 'clients'; // 'clients' or 'employees'
+
+    // Get date range for the last 12 months if no specific month selected
+    const now = new Date();
+    const twelveMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+
+    // Fetch all active clients with their deliverables
+    const clients = await db.query.client.findMany({
+      where: eq(clientTable.status, 'active'),
+      columns: { id: true, name: true, companyName: true },
+      with: {
+        monthlyDeliverables: {
+          columns: { id: true, type: true, quantity: true, platforms: true },
+        },
+      },
+      orderBy: (c, { asc }) => asc(c.name),
+    });
+
+    // Fetch all completed/posted tasks grouped by client and month
+    const rawTasks = await db.query.task.findMany({
+      where: and(
+        gte(taskTable.createdAt, twelveMonthsAgo.toISOString()),
+        inArray(taskTable.status, ['COMPLETED', 'POSTED', 'SCHEDULED'] as any),
+      ),
+      columns: {
+        id: true,
+        clientId: true,
+        assignedTo: true,
+        qcSpecialist: true,
+        scheduler: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        deliverableType: true,
+        monthlyDeliverableId: true,
+      },
+      with: {
+        monthlyDeliverable: { columns: { id: true, type: true } },
+        user_assignedTo: { columns: { id: true, name: true, role: true } },
+        client: { columns: { id: true, name: true, companyName: true } },
+      },
+    });
+
+    // Rename Drizzle relation keys back to the Prisma field names this
+    // handler was written against (qc_specialist raw FK, user relation).
+    const tasks = rawTasks.map((t: any) => {
+      const { qcSpecialist, user_assignedTo, ...rest } = t;
+      return { ...rest, qc_specialist: qcSpecialist, user: user_assignedTo };
+    });
+
+    // Fetch all employees
+    const employees = await db.select({ id: userTable.id, name: userTable.name, role: userTable.role })
+      .from(userTable)
+      .where(and(
+        inArray(userTable.role, ['editor', 'qc', 'scheduler', 'videographer', 'manager', 'admin'] as any),
+        eq(userTable.employeeStatus, 'ACTIVE'),
+      ))
+      .orderBy(asc(userTable.name));
+
+    // Process client deliverables data
+    const clientDeliverables: Record<string, {
+      clientId: string;
+      clientName: string;
+      companyName: string | null;
+      targetMonthly: number;
+      deliverableTargets: Record<string, number>; // type -> quantity per month
+      months: Record<string, { 
+        completed: number; 
+        posted: number; 
+        scheduled: number; 
+        total: number;
+        byType: Record<string, number>; // type -> count
+      }>;
+    }> = {};
+
+    // Initialize client data
+    for (const client of clients) {
+      const totalTarget = client.monthlyDeliverables.reduce((sum, d) => sum + d.quantity, 0);
+      const deliverableTargets: Record<string, number> = {};
+      
+      for (const d of client.monthlyDeliverables) {
+        deliverableTargets[d.type] = (deliverableTargets[d.type] || 0) + d.quantity;
+      }
+      
+      clientDeliverables[client.id] = {
+        clientId: client.id,
+        clientName: client.name,
+        companyName: client.companyName,
+        targetMonthly: totalTarget,
+        deliverableTargets,
+        months: {},
+      };
+    }
+
+    // Process tasks for client view
+    for (const task of tasks) {
+      if (!task.clientId || !clientDeliverables[task.clientId]) continue;
+
+      const monthKey = getMonthKey(new Date(task.createdAt));
+
+      if (!clientDeliverables[task.clientId].months[monthKey]) {
+        clientDeliverables[task.clientId].months[monthKey] = {
+          completed: 0,
+          posted: 0,
+          scheduled: 0,
+          total: 0,
+          byType: {},
+        };
+      }
+
+      const monthData = clientDeliverables[task.clientId].months[monthKey];
+      monthData.total++;
+
+      // Track by deliverable type - prefer monthlyDeliverable.type, fallback to deliverableType
+      const deliverableType = task.monthlyDeliverable?.type || task.deliverableType || 'Other';
+      monthData.byType[deliverableType] = (monthData.byType[deliverableType] || 0) + 1;
+
+      if (task.status === 'COMPLETED') monthData.completed++;
+      if (task.status === 'POSTED') monthData.posted++;
+      if (task.status === 'SCHEDULED') monthData.scheduled++;
+    }
+
+    // Process employee productivity data
+    const employeeProductivity: Record<number, {
+      employeeId: number;
+      employeeName: string;
+      role: string;
+      months: Record<string, {
+        tasksCompleted: number;
+        clientBreakdown: Record<string, { clientName: string; companyName: string | null; count: number }>;
+      }>;
+    }> = {};
+
+    // Initialize employee data
+    for (const emp of employees) {
+      employeeProductivity[emp.id] = {
+        employeeId: emp.id,
+        employeeName: emp.name || 'Unknown',
+        role: emp.role || 'Unknown',
+        months: {},
+      };
+    }
+
+    // Process tasks for employee view
+    for (const task of tasks) {
+      const employeeId = task.assignedTo;
+      if (!employeeId || !employeeProductivity[employeeId]) continue;
+
+      const monthKey = getMonthKey(new Date(task.createdAt));
+
+      if (!employeeProductivity[employeeId].months[monthKey]) {
+        employeeProductivity[employeeId].months[monthKey] = {
+          tasksCompleted: 0,
+          clientBreakdown: {},
+        };
+      }
+
+      const monthData = employeeProductivity[employeeId].months[monthKey];
+      monthData.tasksCompleted++;
+
+      // Track client breakdown
+      if (task.client) {
+        const clientId = task.client.id;
+        if (!monthData.clientBreakdown[clientId]) {
+          monthData.clientBreakdown[clientId] = {
+            clientName: task.client.name,
+            companyName: task.client.companyName,
+            count: 0,
+          };
+        }
+        monthData.clientBreakdown[clientId].count++;
+      }
+    }
+
+    // Also track QC work
+    for (const task of tasks) {
+      const qcId = task.qc_specialist;
+      if (!qcId || !employeeProductivity[qcId]) continue;
+
+      const monthKey = getMonthKey(new Date(task.updatedAt));
+
+      if (!employeeProductivity[qcId].months[monthKey]) {
+        employeeProductivity[qcId].months[monthKey] = {
+          tasksCompleted: 0,
+          clientBreakdown: {},
+        };
+      }
+
+      // Only count if this is a QC user reviewing
+      const employee = employees.find(e => e.id === qcId);
+      if (employee?.role === 'qc') {
+        employeeProductivity[qcId].months[monthKey].tasksCompleted++;
+
+        if (task.client) {
+          const clientId = task.client.id;
+          if (!employeeProductivity[qcId].months[monthKey].clientBreakdown[clientId]) {
+            employeeProductivity[qcId].months[monthKey].clientBreakdown[clientId] = {
+              clientName: task.client.name,
+              companyName: task.client.companyName,
+              count: 0,
+            };
+          }
+          employeeProductivity[qcId].months[monthKey].clientBreakdown[clientId].count++;
+        }
+      }
+    }
+
+    // Track Scheduler work
+    for (const task of tasks) {
+      const schedulerId = task.scheduler;
+      if (!schedulerId || !employeeProductivity[schedulerId]) continue;
+
+      if (task.status === 'SCHEDULED' || task.status === 'POSTED') {
+        const monthKey = getMonthKey(new Date(task.updatedAt));
+
+        if (!employeeProductivity[schedulerId].months[monthKey]) {
+          employeeProductivity[schedulerId].months[monthKey] = {
+            tasksCompleted: 0,
+            clientBreakdown: {},
+          };
+        }
+
+        const employee = employees.find(e => e.id === schedulerId);
+        if (employee?.role === 'scheduler') {
+          employeeProductivity[schedulerId].months[monthKey].tasksCompleted++;
+
+          if (task.client) {
+            const clientId = task.client.id;
+            if (!employeeProductivity[schedulerId].months[monthKey].clientBreakdown[clientId]) {
+              employeeProductivity[schedulerId].months[monthKey].clientBreakdown[clientId] = {
+                clientName: task.client.name,
+                companyName: task.client.companyName,
+                count: 0,
+              };
+            }
+            employeeProductivity[schedulerId].months[monthKey].clientBreakdown[clientId].count++;
+          }
+        }
+      }
+    }
+
+    // Generate list of last 12 months
+    const monthsList: { key: string; label: string }[] = [];
+    for (let i = 0; i < 12; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = getMonthKey(date);
+      monthsList.push({
+        key,
+        label: getMonthName(key),
+      });
+    }
+
+    // Calculate summary stats
+    const currentMonthKey = getMonthKey(now);
+    const previousMonthKey = getMonthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+
+    let totalCurrentMonth = 0;
+    let totalPreviousMonth = 0;
+    let totalTarget = 0;
+
+    for (const client of Object.values(clientDeliverables)) {
+      totalTarget += client.targetMonthly;
+      totalCurrentMonth += client.months[currentMonthKey]?.total || 0;
+      totalPreviousMonth += client.months[previousMonthKey]?.total || 0;
+    }
+
+    const summary = {
+      totalClients: clients.length,
+      totalActiveEmployees: employees.length,
+      totalTargetDeliverables: totalTarget,
+      currentMonthCompleted: totalCurrentMonth,
+      previousMonthCompleted: totalPreviousMonth,
+      completionRate: totalTarget > 0 ? Math.round((totalCurrentMonth / totalTarget) * 100) : 0,
+      monthOverMonthChange: totalPreviousMonth > 0 
+        ? Math.round(((totalCurrentMonth - totalPreviousMonth) / totalPreviousMonth) * 100) 
+        : 0,
+    };
+
+    return NextResponse.json({
+      ok: true,
+      summary,
+      monthsList,
+      clientDeliverables: Object.values(clientDeliverables),
+      employeeProductivity: Object.values(employeeProductivity),
+    });
+
+  } catch (error) {
+    console.error('Error fetching monthly deliverables:', error);
+    return NextResponse.json(
+      { ok: false, message: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+} 
