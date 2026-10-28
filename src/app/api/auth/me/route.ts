@@ -137,11 +137,13 @@ export async function GET(req: Request) {
   const db = getDbHttp();
   try {
     const token = getTokenFromCookies(req);
+    console.log("[ME] 1. Token from cookies:", token ? "✓ Found" : "✗ Not found");
 
     // 1. Try Custom JWT Token first
     if (token) {
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as jwt.JwtPayload;
+        console.log("[ME] 2. JWT verified successfully for user:", decoded.userId);
         const user = await db.query.user.findFirst({
           where: eq(userTable.id, Number(decoded.userId)),
           columns: {
@@ -160,6 +162,8 @@ export async function GET(req: Request) {
             }
           },
         });
+
+        console.log("[ME] 3. User found:", !!user, "Status:", user?.employeeStatus);
 
         if (user && (user.employeeStatus === 'ACTIVE' || user.email === 'sahilsagvekar230@gmail.com')) {
           const clientLink = await getClientLink(user);
@@ -181,10 +185,15 @@ export async function GET(req: Request) {
           };
           const response = NextResponse.json({ user: processedUser }, { status: 200 });
           return withRefreshedAuthCookie(response, user, token);
+        } else {
+          console.log("[ME] 4. User not ACTIVE or not found, status:", user?.employeeStatus);
         }
-      } catch {
+      } catch (jwtErr) {
+        console.log("[ME] JWT verification failed:", jwtErr instanceof Error ? jwtErr.message : jwtErr);
         // Fall through to NextAuth check if JWT fails
       }
+    } else {
+      console.log("[ME] No token found in cookies, checking NextAuth session");
     }
 
     // 2. Try NextAuth Session (for Google/Slack)

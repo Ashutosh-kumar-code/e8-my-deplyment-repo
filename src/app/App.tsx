@@ -23,6 +23,54 @@ function AuthenticatedAppInner() {
   const [currentPage, setCurrentPage] = useState(() =>
     getDefaultPage(viewingAsRole || user?.role || "admin")
   );
+  const [clientInfoLoading, setClientInfoLoading] = useState(false);
+  const [shouldBlockClient, setShouldBlockClient] = useState(false);
+
+  // Check if client has completed info - CRITICAL guard
+  useEffect(() => {
+    const role = (user?.role || "").toLowerCase();
+    if (role !== "client") return;
+
+    let cancelled = false;
+    setClientInfoLoading(true);
+
+    fetch("/api/auth/check-client-info", { credentials: "include" })
+      .then((res) => {
+        if (!cancelled) {
+          if (res.ok) {
+            return res.json().then((data) => {
+              if (!data.infoCompleted) {
+                setShouldBlockClient(true);
+              }
+            });
+          } else {
+            // If check fails, default to blocking for safety
+            setShouldBlockClient(true);
+          }
+        }
+      })
+      .catch((err) => {
+        console.error("Error checking client info in dashboard:", err);
+        if (!cancelled) {
+          setShouldBlockClient(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setClientInfoLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.role]);
+
+  // Redirect to complete-client-info if client hasn't completed setup
+  useEffect(() => {
+    if (shouldBlockClient) {
+      // Use replace to replace the current history entry so back button doesn't loop
+      window.location.replace("/complete-client-info");
+    }
+  }, [shouldBlockClient]);
 
   // Reset page when role changes
   useEffect(() => {
@@ -54,6 +102,8 @@ function AuthenticatedAppInner() {
     if (role !== "client") return;
 
     let cancelled = false;
+    
+    // Check portal access
     fetch("/api/portal/access", { credentials: "include" })
       .then((res) => (res.ok ? res.json() : null))
       .then((access) => {
@@ -75,6 +125,18 @@ function AuthenticatedAppInner() {
   };
 
   if (loading) return <div>Loading...</div>;
+  if (shouldBlockClient || clientInfoLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
+        <div className="text-center space-y-3">
+          <div className="inline-block">
+            <div className="w-10 h-10 rounded-full border-2 border-slate-200 border-t-blue-500 animate-spin" />
+          </div>
+          <p className="text-gray-600">Loading your profile...</p>
+        </div>
+      </div>
+    );
+  }
   if (!user) return <div>Not logged in</div>;
 
   // 🔥 Handle user with no role assigned yet

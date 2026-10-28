@@ -21,15 +21,10 @@ const TYPES = [
   { id: "QUESTION", label: "Question" },
 ];
 const PORTALS = [
-  { id: "Dev Portal", label: "Dev Portal" },
-  { id: "Editor", label: "Editor" },
-  { id: "Client", label: "Client" },
-  { id: "QC", label: "QC" },
-  { id: "Videographer", label: "Videographer" },
-  { id: "Host", label: "Host" },
-  { id: "Sales", label: "Sales" },
-  { id: "Sales Manager", label: "Sales Manager" },
-  { id: "Scheduler", label: "Scheduler" },
+  { id: "ADMIN", label: "Admin" },
+  { id: "SUPPORT", label: "Support" },
+  { id: "FEATURE_REQUEST", label: "Feature Request" },
+  { id: "BUG_REPORT", label: "Bug Report" },
 ];
 const PRIORITIES = [
   { id: "UNSET", label: "Not set", style: "bg-gray-100 text-gray-700" },
@@ -245,7 +240,7 @@ function FilterSelect({
 function QuickAdd({ onCreated }: { onCreated: () => void }) {
   const [title, setTitle] = useState("");
   const [type, setType] = useState("BUG");
-  const [portal, setPortal] = useState("");
+  const [portal, setPortal] = useState("ADMIN");
   const [expanded, setExpanded] = useState(false);
   const [description, setDescription] = useState("");
   const [loomUrl, setLoomUrl] = useState("");
@@ -275,10 +270,6 @@ function QuickAdd({ onCreated }: { onCreated: () => void }) {
 
   const submit = async () => {
     if (!title.trim()) return;
-    if (!portal.trim()) {
-      toast.error("Please select a portal");
-      return;
-    }
     setSaving(true);
     try {
       const { ticket } = await api("/api/dev-portal/tickets", {
@@ -297,7 +288,7 @@ function QuickAdd({ onCreated }: { onCreated: () => void }) {
         }
       }
       toast.success("Logged");
-      setTitle(""); setDescription(""); setLoomUrl(""); setFiles([]); setType("BUG"); setPortal(""); setExpanded(false);
+      setTitle(""); setDescription(""); setLoomUrl(""); setFiles([]); setType("BUG"); setPortal("ADMIN"); setExpanded(false);
       onCreated();
     } catch (err: any) {
       toast.error(err.message);
@@ -333,7 +324,7 @@ function QuickAdd({ onCreated }: { onCreated: () => void }) {
             </SelectContent>
           </Select>
           <Select value={portal} onValueChange={setPortal}>
-            <SelectTrigger className="w-[140px] h-10 border-gray-300"><SelectValue placeholder="Portal" /></SelectTrigger>
+            <SelectTrigger className="w-[140px] h-10 border-gray-300"><SelectValue /></SelectTrigger>
             <SelectContent>
               {PORTALS.map((p) => <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>)}
             </SelectContent>
@@ -471,7 +462,6 @@ function TicketRow({ ticket: t, onClick }: { ticket: Ticket; onClick: () => void
           {/* Tags */}
           <div className="flex flex-wrap items-center gap-1.5">
             {t.source === "CLIENT" && <Badge className="bg-red-600 text-white">Client{t.clientName ? ` · ${t.clientName}` : ""}</Badge>}
-            {t.portal && <Badge variant="outline" className="border-gray-300 bg-gray-50">{t.portal}</Badge>}
             <Badge className={pri.style}>{pri.label}</Badge>
             <Badge variant="outline" className="border-gray-300">{TYPES.find((x) => x.id === t.type)?.label ?? t.type}</Badge>
           </div>

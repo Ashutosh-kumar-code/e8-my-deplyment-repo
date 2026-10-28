@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     const userId = getUserIdFromToken(token);
     if (!userId) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-    const { screenshot, message, pageUrl, portal } = await req.json();
+    const { screenshot, message, pageUrl } = await req.json();
 
     if (screenshot && typeof screenshot === "string" && screenshot.length > MAX_SCREENSHOT_BYTES) {
       return NextResponse.json({ message: "Screenshot too large" }, { status: 413 });
@@ -59,7 +59,6 @@ export async function POST(req: Request) {
       ? user.client.companyName || user.client.name || "Unknown Client"
       : `${user.role || "Unknown"} portal`;
 
-    const detectedPortal = typeof portal === "string" ? portal : "unknown";
     const cleanMessage = typeof message === "string" ? message.trim() : "";
     const cleanPageUrl = typeof pageUrl === "string" ? pageUrl : "";
     const cleanScreenshot = typeof screenshot === "string" ? screenshot : null;
@@ -73,7 +72,6 @@ export async function POST(req: Request) {
         userEmail: user.email,
         message: cleanMessage,
         pageUrl: cleanPageUrl,
-        portal: detectedPortal,
         userAgent: req.headers.get("user-agent") || "",
         screenshotBase64: cleanScreenshot,
       }),
@@ -85,7 +83,7 @@ export async function POST(req: Request) {
       // sendClientFeedbackEmail above, just no longer persisted to the row.
       db.insert(feedbackTable).values({
         id: createId(),
-        subject: `Problem report — ${sourceLabel} (${detectedPortal} portal)`,
+        subject: `Problem report — ${sourceLabel}`,
         message: cleanMessage || "(no note provided)",
         category: "bug_report",
         priority: "normal",
@@ -102,7 +100,6 @@ export async function POST(req: Request) {
         clientId: user.client?.id ?? null,
         clientName: user.client ? user.client.companyName || user.client.name || null : null,
         sourceLabel,
-        portal: detectedPortal,
         message: cleanMessage,
         pageUrl: cleanPageUrl,
         userAgent: req.headers.get("user-agent") || "",

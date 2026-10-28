@@ -89,7 +89,7 @@ export async function POST(
     const response = NextResponse.json({
       success: true,
       clientId: record.clientId,
-      redirect: '/dashboard',
+      redirect: '/complete-client-info',
     });
 
     // Set the auth cookie (same name as rest of app)

@@ -98,8 +98,8 @@ export default function OnboardingPage() {
       if (!res.ok) throw new Error(data.error || "Something went wrong");
 
       setStage("done");
-      // Small delay so user sees the success state, then go to dashboard
-      setTimeout(() => router.push("/dashboard"), 1800);
+      // Small delay so user sees the success state, then go to complete-client-info for brand onboarding
+      setTimeout(() => router.push("/complete-client-info"), 1800);
     } catch (e: any) {
       setError(e.message);
     } finally {

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getDbPool } from "@/lib/db";
 import { client as clientTable, task, user as userTable, monthlyDeliverable, oneOffDeliverable } from "@/lib/db/schema";
 import { createId } from "@/lib/db/id";
-import { and, eq, or, ilike, arrayContains, gte, lte, asc, count } from "drizzle-orm";
+import { and, eq, or, ilike, arrayContains, gte, lte, asc, count, isNull } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { createClientFolders } from "@/lib/s3";
 import { createRecurringTasksForClient } from "@/app/api/clients/recurring";
@@ -59,6 +59,58 @@ export async function GET(req: NextRequest) {
     const [rawClients, taskCounts] = await Promise.all([
       db.query.client.findMany({
         orderBy: asc(clientTable.name),
+        where: eq(clientTable.infoCompleted, true), // Only show clients who completed onboarding
+        columns: {
+          // Include all columns plus infoCompleted for onboarding filtering
+          id: true,
+          userId: true,
+          name: true,
+          email: true,
+          companyName: true,
+          address: true,
+          phone: true,
+          emails: true,
+          phones: true,
+          accountManagerId: true,
+          status: true,
+          startDate: true,
+          renewalDate: true,
+          lastActivity: true,
+          requiresClientReview: true,
+          requiresVideographer: true,
+          requiresCoverImage: true,
+          hasPostingServices: true,
+          isTrial: true,
+          clientReviewDeliverableTypes: true,
+          templateHashtags: true,
+          shootDaysPerMonth: true,
+          scriptsRequired: true,
+          infoCompleted: true,
+          fullName: true,
+          bestWayToReach: true,
+          bestTime: true,
+          responsibilities: true,
+          additionalContacts: true,
+          socialAccounts: true,
+          brandPrimaryColor: true,
+          brandSecondaryColor: true,
+          brandAccentColor: true,
+          brandAssets: true,
+          primaryFont: true,
+          secondaryFont: true,
+          customFonts: true,
+          noBrandFonts: true,
+          brandVoice: true,
+          brandValues: true,
+          tones: true,
+          dos: true,
+          donts: true,
+          avoidWords: true,
+          defaultHashtags: true,
+          competitors: true,
+          references: true,
+          themePreference: true,
+        },
         with: {
           monthlyDeliverables: true,
           oneOffDeliverables: true,
@@ -145,6 +197,8 @@ export async function GET(req: NextRequest) {
           completed: stats.completed,
           total: totalMonthlyDeliverables || stats.total,
         },
+        // Include infoCompleted for onboarding status filtering
+        infoCompleted: (c as any).infoCompleted ?? false,
         // Remove tasks from response to keep it clean
         tasks: undefined,
       };

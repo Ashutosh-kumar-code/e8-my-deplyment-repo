@@ -28,25 +28,6 @@ interface Rect {
 
 const MIN_SELECTION_PX = 10;
 
-// Detect which portal the user is currently on based on the URL path
-function detectPortal(): string {
-  if (typeof window === "undefined") return "unknown";
-  const path = window.location.pathname.toLowerCase();
-
-  if (path.startsWith("/client") || path.startsWith("/dashboard")) return "Client";
-  if (path.startsWith("/editor")) return "Editor";
-  if (path.startsWith("/admin")) return "Admin";
-  if (path.startsWith("/dev-portal")) return "Dev Portal";
-  if (path.startsWith("/scheduler")) return "Scheduler";
-  if (path.startsWith("/videographer")) return "Videographer";
-  if (path.startsWith("/qc")) return "QC";
-  if (path.startsWith("/host")) return "Host";
-  if (path.startsWith("/sales")) return "Sales";
-  if (path.startsWith("/sales-manager")) return "Sales Manager";
-
-  return "unknown";
-}
-
 export function ClientFeedbackWidget() {
   const isHidden = useFeedbackWidgetHidden();
   const [isOpen, setIsOpen] = useState(false);
@@ -62,7 +43,6 @@ export function ClientFeedbackWidget() {
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
   const finalScreenshot = croppedScreenshot ?? screenshot;
-  const portal = detectPortal();
 
   const handleOpen = async () => {
     setIsOpen(true);
@@ -211,7 +191,6 @@ export function ClientFeedbackWidget() {
           screenshot: finalScreenshot,
           message,
           pageUrl: typeof window !== "undefined" ? window.location.href : "",
-          portal,
         }),
       });
       if (!res.ok) throw new Error("Failed to send feedback");

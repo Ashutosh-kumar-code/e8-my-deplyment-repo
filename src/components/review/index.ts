@@ -9,7 +9,7 @@ export { ReviewTimeline } from './ReviewTimeline';
 export { ReviewCompactTransport, ReviewPlaybackControls } from './ReviewCompactTransport';
 export { ReviewModePills } from './ReviewModePills';
 export type { ReviewMode } from './ReviewModePills';
-export { ReviewDrawOverlay } from './ReviewDrawOverlay';
+export { ReviewDrawOverlay } from './Reviewdrawoverlay';
 export { ReviewInstagramOverlay } from './ReviewInstagramOverlay';
 export { StatusDropdown } from './StatusDropdown';
 export { ReviewStepProgress } from './ReviewStepProgress';

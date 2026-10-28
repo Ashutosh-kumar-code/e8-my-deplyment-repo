@@ -19,7 +19,6 @@ export async function createDevTicketFromReport(opts: {
   clientId: string | null;
   clientName: string | null;
   sourceLabel: string;
-  portal: string;
   message: string;
   pageUrl: string;
   userAgent: string;
@@ -33,7 +32,6 @@ export async function createDevTicketFromReport(opts: {
   const details = [
     opts.message,
     opts.pageUrl ? `Page: ${opts.pageUrl}` : "",
-    `Portal: ${opts.portal}`,
     `Reported by: ${opts.reporterName} (${opts.sourceLabel})`,
     opts.userAgent ? `Browser: ${opts.userAgent}` : "",
   ]

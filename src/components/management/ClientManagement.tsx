@@ -311,6 +311,7 @@ const mockAccountManagers = [
 
 export function ClientManagement() {
   const [clients, setClients] = useState<Client[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(true);
   const [showAutoInvoiceDialog, setShowAutoInvoiceDialog] = useState(false);
   const [autoInvoiceRows, setAutoInvoiceRows] = useState<AutoInvoiceRow[]>([]);
   const [autoInvoiceLoading, setAutoInvoiceLoading] = useState(false);
@@ -335,6 +336,10 @@ export function ClientManagement() {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [showClientDetailsDialog, setShowClientDetailsDialog] = useState(false);
+  const [showInviteDialog, setShowInviteDialog] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteCompanyName, setInviteCompanyName] = useState("");
+  const [inviteSending, setInviteSending] = useState(false);
   const [uploadFolder, setUploadFolder] = useState("elements");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -491,29 +496,41 @@ export function ClientManagement() {
       client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       client.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       client.email.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus =
-      statusFilter === "all" || client.status === statusFilter;
-    const matchesManager =
-      managerFilter === "all" || client.accountManagerId === managerFilter;
 
-    return matchesSearch && matchesStatus && matchesManager;
+    return matchesSearch;
   });
 
   useEffect(() => {
+    const abortController = new AbortController();
+
     async function loadClients() {
+      setClientsLoading(true);
+      setClients([]); // Clear clients immediately to prevent showing wrong data
       try {
-        const res = await fetch("/api/clients");
+        const apiUrl = statusFilter === "invited" ? "/api/clients/invited" : "/api/clients";
+        const res = await fetch(apiUrl, { signal: abortController.signal });
         const data = await res.json();
 
         setClients(Array.isArray(data.clients) ? data.clients : []);
-      } catch (err) {
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          // Request was cancelled, ignore this error
+          return;
+        }
         console.error("Failed to load clients", err);
         setClients([]);
+      } finally {
+        setClientsLoading(false);
       }
     }
 
     loadClients();
-  }, []);
+
+    // Cleanup function to cancel request when tab changes
+    return () => {
+      abortController.abort();
+    };
+  }, [statusFilter]);
 
   const loadAutoInvoiceSettings = async () => {
     setAutoInvoiceLoading(true);
@@ -549,6 +566,51 @@ export function ClientManagement() {
     setAutoInvoiceFilter("all");
     setShowInvoiceConfirm(false);
     loadAutoInvoiceSettings();
+  };
+
+  const handleSendClientInvite = async () => {
+    if (!inviteEmail.trim()) {
+      toast.error("Please enter an email address");
+      return;
+    }
+
+    setInviteSending(true);
+    try {
+      const response = await fetch("/api/portal/invite-client", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          email: inviteEmail.trim(),
+          companyName: inviteCompanyName.trim() || null
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        toast.success("Invite sent successfully!");
+        setInviteEmail("");
+        setInviteCompanyName("");
+        setShowInviteDialog(false);
+
+        // Reload clients list to show newly invited client
+        // Use the correct API based on current tab
+        setClientsLoading(true);
+        const apiUrl = statusFilter === "invited" ? "/api/clients/invited" : "/api/clients";
+        const res = await fetch(apiUrl);
+        const clientsData = await res.json();
+        setClients(Array.isArray(clientsData.clients) ? clientsData.clients : []);
+        setClientsLoading(false);
+      } else {
+        toast.error(data.message || "Failed to send invite");
+      }
+    } catch (err) {
+      console.error("Error sending invite:", err);
+      toast.error("Failed to send invite");
+      setClientsLoading(false);
+    } finally {
+      setInviteSending(false);
+    }
   };
 
   const updateAutoInvoiceRow = (clientId: string, patch: Partial<AutoInvoiceRow>) => {
@@ -2827,31 +2889,15 @@ export function ClientManagement() {
             className="pl-10 bg-secondary/30 h-10 border-transparent focus-visible:ring-1 focus-visible:ring-primary/20 transition-all rounded-full"
           />
         </div>
-        <FilterSelect
-          value={statusFilter}
-          onValueChange={setStatusFilter}
-          placeholder="Filter by status"
-          className="w-[160px]"
-          icon={<Filter className="h-4 w-4 mr-2" />}
-          options={[
-            { value: "all", label: "All Status" },
-            { value: "active", label: "Active" },
-            { value: "pending", label: "Pending" },
-            { value: "expired", label: "Expired" },
-          ]}
-        />
-        <FilterSelect
-          value={managerFilter}
-          onValueChange={setManagerFilter}
-          placeholder="Filter by manager"
-          className="w-[180px]"
-          icon={<User className="h-4 w-4 mr-2" />}
-          options={[
-            { value: "all", label: "All Managers" },
-            ...mockAccountManagers.map((manager) => ({ value: manager.id, label: manager.name })),
-          ]}
-        />
         <div className="flex-1" />
+        <Button
+          variant="outline"
+          onClick={() => setShowInviteDialog(true)}
+          className="gap-2 shrink-0"
+        >
+          <Mail className="h-4 w-4" />
+          Invite Client
+        </Button>
         <Button
           variant="outline"
           onClick={openAutoInvoiceDialog}
@@ -2860,16 +2906,30 @@ export function ClientManagement() {
           <DollarSign className="h-4 w-4" />
           Auto-Invoice Settings
         </Button>
-        <Button
-          onClick={() => {
-            setEditingClient(null);
-            setShowAddDialog(true);
-          }}
-          className="gap-2 shrink-0"
+      </div>
+
+      {/* Client Type Filter Tabs */}
+      <div className="flex gap-2 border-b border-gray-200">
+        <button
+          onClick={() => setStatusFilter("all")}
+          className={`px-4 py-2 font-medium text-sm transition-colors ${
+            statusFilter === "all"
+              ? "text-gray-900 border-b-2 border-gray-900"
+              : "text-gray-600 hover:text-gray-900"
+          }`}
         >
-          <Plus className="h-4 w-4" />
-          Add Client
-        </Button>
+          All Clients
+        </button>
+        <button
+          onClick={() => setStatusFilter("invited")}
+          className={`px-4 py-2 font-medium text-sm transition-colors ${
+            statusFilter === "invited"
+              ? "text-gray-900 border-b-2 border-gray-900"
+              : "text-gray-600 hover:text-gray-900"
+          }`}
+        >
+          Invited (Pending Onboarding)
+        </button>
       </div>
 
       {/* Client List */}
@@ -2884,6 +2944,9 @@ export function ClientManagement() {
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
                     <h3 className="text-gray-900">{client.companyName}</h3>
+                    {!(client as any).infoCompleted && (
+                      <span className="text-xs text-gray-500 font-medium">({client.email})</span>
+                    )}
                     {/* <Badge
                       variant={getStatusVariant(client.status)}
                       className="flex items-center gap-1"
@@ -3006,14 +3069,14 @@ export function ClientManagement() {
                     <div>
                       <Label className="text-gray-500 text-xs">Progress</Label>
                       <p className="text-gray-900 text-sm">
-                        {client.currentProgress.completed}/
-                        {client.currentProgress.total}
+                        {client?.currentProgress?.completed}/
+                        {client?.currentProgress?.total}
                       </p>
                     </div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {(client.monthlyDeliverables ?? [])
+                    {(client?.monthlyDeliverables ?? [])
                       .slice(0, 3)
                       .map((deliverable) => (
                         <Badge
@@ -3062,13 +3125,24 @@ export function ClientManagement() {
           </Card>
         ))}
 
-        {filteredClients.length === 0 && (
+        {clientsLoading ? (
           <Card className="bg-white border-gray-200">
             <CardContent className="p-12 text-center">
-              <p className="text-gray-400">No clients found</p>
+              <div className="inline-block">
+                <div className="w-8 h-8 rounded-full border-2 border-gray-200 border-t-gray-900 animate-spin" />
+              </div>
+              <p className="text-gray-600 text-sm mt-3">Loading clients...</p>
             </CardContent>
           </Card>
-        )}
+        ) : filteredClients.length === 0 ? (
+          <Card className="bg-white border-gray-200">
+            <CardContent className="p-12 text-center">
+              <p className="text-gray-600 text-sm">
+                {statusFilter === "invited" ? "No invited clients pending onboarding" : "No clients found"}
+              </p>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
       {/* Add/Edit Client Dialog */}
@@ -4832,6 +4906,68 @@ export function ClientManagement() {
               }
             >
               {runningInvoiceNow ? "Sending..." : "Yes, send invoices"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Invite Client Dialog */}
+      <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>
+        <DialogContent className="bg-white max-w-md">
+          <DialogHeader>
+            <DialogTitle>Invite Client</DialogTitle>
+            <DialogDescription>
+              Send an invitation email to a new client. They'll receive a welcome message with a link to set up their account.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="invite-email" className="text-sm font-medium">
+                Client Email Address
+              </Label>
+              <Input
+                id="invite-email"
+                type="email"
+                placeholder="client@example.com"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                disabled={inviteSending}
+                className="mt-2"
+              />
+              {inviteEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteEmail) && (
+                <p className="text-xs text-red-600 mt-1">Please enter a valid email address</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="invite-company" className="text-sm font-medium">
+                Company Name (Optional)
+              </Label>
+              <Input
+                id="invite-company"
+                type="text"
+                placeholder="Acme Inc."
+                value={inviteCompanyName}
+                onChange={(e) => setInviteCompanyName(e.target.value)}
+                disabled={inviteSending}
+                className="mt-2"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowInviteDialog(false)}
+              disabled={inviteSending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSendClientInvite}
+              disabled={inviteSending || !inviteEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteEmail)}
+            >
+              {inviteSending ? "Sending..." : "Send Invite"}
             </Button>
           </DialogFooter>
         </DialogContent>

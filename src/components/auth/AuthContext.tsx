@@ -80,18 +80,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Check auth status on mount
   const refreshUser = React.useCallback(async (): Promise<string | null> => {
-    const res = await fetch("/api/auth/me");
+    const res = await fetch("/api/auth/me", {
+      credentials: 'include',
+    });
     if (!res.ok) throw new Error(`auth/me failed: ${res.status}`);
     const data = await res.json();
     if (data.user) {
       setUser(data.user);
       setIsAuthenticated(true);
+      
+      // Check if this is a client that hasn't completed client info
+      const userRole = data.user?.role?.toLowerCase();
+      if (userRole === 'client') {
+        try {
+          const checkRes = await fetch("/api/auth/check-client-info", {
+            credentials: 'include',
+          });
+          const checkData = await checkRes.json();
+          if (checkRes.ok && !checkData.infoCompleted) {
+            // Redirect to complete client info
+            router.push("/complete-client-info");
+            return data.user.role ?? null;
+          }
+        } catch (err) {
+          console.warn("Error checking client info on refresh:", err);
+          // Continue anyway if check fails
+        }
+      }
+      
       return data.user.role ?? null;
     }
     setUser(null);
     setIsAuthenticated(false);
     return null;
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     // /api/auth/me can fail transiently (Worker 503 / network blip). That is not
@@ -265,6 +287,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, rememberMe }),
+      credentials: 'include',
     });
 
     const data = await res.json();
@@ -292,6 +315,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // instead so those derived flags are correct immediately.
     setIsAuthenticated(true);
     setPendingLoginEmail(null);
+    
+    // Check if this is a client and if they haven't completed client info
+    const userRole = data.user?.role || data.user?.roles?.[0];
+    if (userRole?.toLowerCase() === 'client') {
+      try {
+        const checkRes = await fetch("/api/auth/check-client-info", {
+          credentials: 'include',
+        });
+        const checkData = await checkRes.json();
+        if (checkRes.ok && !checkData.infoCompleted) {
+          // Redirect to complete client info - MUST happen before refreshUser
+          setLoading(false);
+          // Use a small delay to ensure state is updated before navigation
+          setTimeout(() => router.push("/complete-client-info"), 0);
+          return;
+        }
+      } catch (err) {
+        console.warn("Error checking client info:", err);
+        // Continue anyway if check fails - user will be blocked by dashboard guard
+      }
+    }
+    
     try {
       await refreshUser();
     } catch {
@@ -302,7 +347,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      await fetch("/api/logout", { method: "POST" });
+      await fetch("/api/logout", { method: "POST", credentials: 'include' });
       await signOut({ redirect: false });
     } catch (error) {
       console.error("Logout error:", error);
@@ -335,6 +380,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: pendingLoginEmail, otp: code }),
+      credentials: 'include',
     });
 
     const data = await res.json();
@@ -346,6 +392,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setIsAuthenticated(true);
     setPendingLoginEmail(null);
+    
+    // Check if this is a client that hasn't completed client info
+    const userRole = data.user?.role?.toLowerCase();
+    if (userRole === 'client') {
+      try {
+        const checkRes = await fetch("/api/auth/check-client-info", {
+          credentials: 'include',
+        });
+        const checkData = await checkRes.json();
+        if (checkRes.ok && !checkData.infoCompleted) {
+          setLoading(false);
+          // Redirect to complete client info - MUST happen before refreshUser
+          setTimeout(() => router.push("/complete-client-info"), 0);
+          return;
+        }
+      } catch (err) {
+        console.warn("Error checking client info after 2FA:", err);
+        // Continue anyway if check fails - user will be blocked by dashboard guard
+      }
+    }
+    
     try {
       await refreshUser();
     } catch {
@@ -363,6 +430,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: pendingLoginEmail }),
+      credentials: 'include',
     });
 
     if (!res.ok) {
